@@ -8,13 +8,18 @@ const isDesktopApp = typeof window !== 'undefined' && window.navigator.userAgent
 const isDevelopment = process.env.NODE_ENV === 'development';
 
 // Production server URL
-const PRODUCTION_SERVER = 'https://waitnot-restaurant.onrender.com';
+// Auto-detect which Render service we're on
+const PRODUCTION_SERVER = typeof window !== 'undefined' && window.location.hostname === 'testing-repo-waitnot.onrender.com'
+  ? 'https://testing-repo-waitnot.onrender.com'
+  : 'https://waitnot-restaurant1.onrender.com';
 
 // Development server URL  
 const DEVELOPMENT_SERVER = 'http://localhost:5001';
 
 // Production frontend URL (for QR codes) - Always use this for QR codes so customers can access them
-const PRODUCTION_FRONTEND = 'https://waitnot-restaurant.onrender.com';
+const PRODUCTION_FRONTEND = typeof window !== 'undefined' && window.location.hostname === 'testing-repo-waitnot.onrender.com'
+  ? 'https://testing-repo-waitnot.onrender.com'
+  : 'https://waitnot-restaurant1.onrender.com';
 
 // Development frontend URL
 const DEVELOPMENT_FRONTEND = 'http://localhost:3000';
