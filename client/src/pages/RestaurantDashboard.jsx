@@ -1,0 +1,4700 @@
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Plus, Edit, Trash2, LogOut, X, Settings, Printer, BarChart3, User, Search, GripVertical, ShoppingCart, Upload, Menu, QrCode, Clock, Wifi, WifiOff, Package, MessageSquare, ChevronRight, Bell, Zap, Truck, CheckCircle, Calendar } from 'lucide-react';
+import axios from 'axios';
+import io from 'socket.io-client';
+import FeatureGuard from '../components/FeatureGuard';
+import { useFeatures } from '../context/FeatureContext';
+import { trackRestaurantEvent } from '../utils/analytics';
+import notificationSound from '../utils/notificationSound';
+import { getWebSocketUrl, getEnvironmentInfo, getFrontendUrl } from '../config/environment.js';
+import { printCustomBill, getPrinterSettings, loadPrinterSettingsFromAPI } from '../utils/customBillGenerator.js';
+import { smartPrint } from '../utils/qzPrint.js';
+import { buildKOTHTML, buildBillHTML } from '../utils/printTemplates.js';
+import DiscountManager from '../components/DiscountManager';
+import StaffManagement from '../components/StaffManagement';
+
+function FloorPlanView({ restaurant, activeDineInOrders, printStaffKOT, printStaffCustomerBill, printKitchenOrder, printReceipt, clearTableAndSaveToHistory, openEditOrderModal, cancelOrder }) {
+  const [selectedFloorTable, setSelectedFloorTable] = useState(null);
+
+  const getTableOrders = (n) => activeDineInOrders.filter(o => parseInt(o.tableNumber) === n);
+  const getTableTotal = (t) => t.reduce((s, o) => s + (o.totalAmount || 0), 0);
+
+  const selectedOrders = selectedFloorTable ? getTableOrders(selectedFloorTable) : [];
+  const selectedTotal = getTableTotal(selectedOrders);
+  const isStaffOrder = selectedOrders.some(o => o.source === 'staff');
+  const firstOrder = selectedOrders[0];
+  const combinedItems = {};
+  selectedOrders.forEach(o => o.items.forEach(i => {
+    if (combinedItems[i.name]) { combinedItems[i.name].quantity += i.quantity; combinedItems[i.name].total += i.price * i.quantity; }
+    else combinedItems[i.name] = { name: i.name, price: i.price, quantity: i.quantity, total: i.price * i.quantity };
+  }));
+
+  const tableCount = restaurant?.tables || 10;
+
+  return (
+    <div className="flex gap-6 min-h-[400px]">
+      {/* Floor Plan — always visible, fixed width */}
+      <div className="w-full sm:w-80 shrink-0">
+        <div className="bg-white rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-gray-800">Floor Plan</h2>
+            <div className="flex gap-3 text-xs text-gray-400">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-green-200 border border-green-400 inline-block"></span>Free</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-red-200 border border-red-400 inline-block"></span>Busy</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {Array.from({ length: tableCount }, (_, i) => i + 1).map(n => {
+              const tOrders = getTableOrders(n);
+              const tTotal = getTableTotal(tOrders);
+              const isOccupied = tOrders.length > 0;
+              const isSelected = selectedFloorTable === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() => setSelectedFloorTable(isSelected ? null : n)}
+                  className={`relative rounded-xl py-3 px-1 border-2 flex flex-col items-center gap-0.5 transition-all ${
+                    isSelected
+                      ? 'border-primary bg-primary shadow-lg scale-105'
+                      : isOccupied
+                      ? 'bg-red-50 border-red-300 hover:border-red-500'
+                      : 'bg-green-50 border-green-300 hover:border-green-500'
+                  }`}
+                >
+                  <span className={`text-base font-bold leading-none ${isSelected ? 'text-white' : isOccupied ? 'text-red-700' : 'text-green-700'}`}>{n}</span>
+                  {isOccupied && !isSelected && (
+                    <span className="text-xs font-medium text-red-600 leading-none">₹{tTotal}</span>
+                  )}
+                  {!isOccupied && (
+                    <span className={`text-xs leading-none ${isSelected ? 'text-white/70' : 'text-green-500'}`}>Free</span>
+                  )}
+                  {isOccupied && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse border-2 border-white"></span>}
+                </button>
+              );
+            })}
+          </div>
+          {activeDineInOrders.length === 0 && (
+            <p className="text-center text-gray-400 text-xs mt-4">No active orders</p>
+          )}
+        </div>
+      </div>
+
+      {/* Table Detail — shows when table is selected */}
+      <div className="flex-1 min-w-0">
+        {!selectedFloorTable ? (
+          <div className="h-full flex items-center justify-center text-gray-400">
+            <div className="text-center">
+              <svg className="w-16 h-16 mx-auto mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h18M3 14h18M10 3v18M14 3v18" />
+              </svg>
+              <p className="text-sm text-text-secondary">Select a table to view details</p>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden flex flex-col" style={{maxHeight:'calc(100vh - 200px)', minHeight:'420px'}}>
+            {/* Header — pinned */}
+            <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 shrink-0">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">{isStaffOrder ? 'Staff · ' : ''}Table {selectedFloorTable}</h3>
+                <p className="text-sm text-gray-400 mt-0.5">{selectedOrders.length > 0 ? `${selectedOrders.length} order(s) · ${firstOrder?.customerName || ''}` : 'No orders'}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-400">Total</p>
+                <p className="text-3xl font-bold text-primary">₹{selectedTotal}</p>
+              </div>
+            </div>
+
+            {/* Items — scrollable */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 border-b border-gray-100">
+              {Object.values(combinedItems).length > 0 ? (
+                <>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Items</p>
+                  <div className="space-y-1">
+                    {Object.values(combinedItems).map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center py-1.5 border-b border-gray-50 last:border-0">
+                        <div>
+                          <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                          <span className="text-xs text-gray-400 ml-2">× {item.quantity}</span>
+                        </div>
+                        <span className="text-sm font-semibold text-gray-700">₹{item.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-between items-center pt-3 mt-2 border-t-2 border-gray-200">
+                    <span className="font-bold text-gray-800">Total</span>
+                    <span className="text-xl font-bold text-primary">₹{selectedTotal}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-center text-gray-400 text-sm py-6">No orders for this table</p>
+              )}
+            </div>
+
+            {/* Status badges — pinned */}
+            {selectedOrders.length > 0 && (
+              <div className="px-5 py-3 border-b border-gray-100 flex gap-2 flex-wrap shrink-0">
+                {selectedOrders.map(o => (
+                  <span key={o._id} className={`text-xs px-3 py-1 rounded-full font-semibold ${
+                    o.status === 'pending' ? 'bg-yellow-100 text-yellow-700'
+                    : o.status === 'preparing' ? 'bg-blue-100 text-blue-700'
+                    : o.status === 'ready' ? 'bg-green-100 text-green-700'
+                    : 'bg-gray-100 text-gray-500'
+                  }`}>{o.status}</span>
+                ))}
+              </div>
+            )}
+
+            {/* Action buttons — always visible at bottom */}
+            <div className="px-5 py-4 flex flex-wrap gap-3 shrink-0 bg-white border-t border-gray-100">
+              <button
+                onClick={() => isStaffOrder ? printStaffKOT(firstOrder) : printKitchenOrder(selectedFloorTable, selectedOrders)}
+                className="px-5 py-2.5 bg-orange-500 text-white rounded-lg text-sm font-semibold hover:bg-orange-600 transition-colors"
+              >Print KOT</button>
+              <button
+                onClick={() => isStaffOrder ? printStaffCustomerBill(firstOrder) : printReceipt(selectedFloorTable, selectedOrders, selectedTotal)}
+                className="px-5 py-2.5 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors"
+              >Print Bill</button>
+              <button
+                onClick={() => clearTableAndSaveToHistory(selectedFloorTable, selectedOrders, selectedTotal)}
+                className="px-5 py-2.5 bg-purple-500 text-white rounded-lg text-sm font-semibold hover:bg-purple-600 transition-colors"
+              >Clear Table</button>
+              {firstOrder && (firstOrder.status === 'completed' || firstOrder.status === 'pending') && (
+                <button
+                  onClick={() => openEditOrderModal(firstOrder)}
+                  className="px-5 py-2.5 bg-green-500 text-white rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors"
+                >Edit Order</button>
+              )}
+              {firstOrder && firstOrder.status !== 'completed' && firstOrder.status !== 'cancelled' && (
+                <button
+                  onClick={() => cancelOrder(firstOrder)}
+                  className="px-5 py-2.5 bg-red-500 text-white rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors"
+                >Cancel</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RoomFloorPlanView({ restaurant, activeRoomOrders, printKitchenOrder, printReceipt, clearRoomAndSaveToHistory, openEditOrderModal, onGoToQR, cancelOrder }) {
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  const roomNames = restaurant?.features?.roomNames || {};
+  const getRoomLabel = (n) => roomNames[n] || `Room ${n}`;
+
+  const getRoomOrders = (n) => activeRoomOrders.filter(o => parseInt(o.roomNumber) === n);
+  const getRoomTotal = (orders) => orders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+
+  const selectedOrders = selectedRoom ? getRoomOrders(selectedRoom) : [];
+  const selectedTotal = getRoomTotal(selectedOrders);
+  const firstOrder = selectedOrders[0];
+  const combinedItems = {};
+  selectedOrders.forEach(o => o.items.forEach(i => {
+    if (combinedItems[i.name]) { combinedItems[i.name].quantity += i.quantity; combinedItems[i.name].total += i.price * i.quantity; }
+    else combinedItems[i.name] = { name: i.name, price: i.price, quantity: i.quantity, total: i.price * i.quantity };
+  }));
+
+  const roomCount = restaurant?.rooms || 0;
+
+  if (roomCount === 0) {
+    return (
+      <div className="text-center py-16 bg-white rounded-xl shadow-sm">
+        <div className="text-5xl mb-3">🏨</div>
+        <p className="text-gray-700 font-semibold mb-1">No rooms assigned yet</p>
+        <p className="text-sm text-gray-400 mb-6">Add rooms from the QR Codes tab to get started.</p>
+        <button
+          onClick={onGoToQR}
+          className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 font-semibold"
+        >
+          🏨 Assign Rooms (QR Codes tab)
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-6 min-h-[400px]">
+      {/* Room Grid */}
+      <div className="w-full sm:w-80 shrink-0">
+        <div className="bg-white rounded-xl shadow-sm p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-gray-800">Room Plan</h2>
+            <div className="flex gap-3 text-xs text-gray-400">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-green-200 border border-green-400 inline-block"></span>Free</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-purple-200 border border-purple-400 inline-block"></span>Ordered</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {Array.from({ length: roomCount }, (_, i) => i + 1).map(n => {
+              const rOrders = getRoomOrders(n);
+              const rTotal = getRoomTotal(rOrders);
+              const isOccupied = rOrders.length > 0;
+              const isSelected = selectedRoom === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() => setSelectedRoom(isSelected ? null : n)}
+                  className={`relative rounded-xl py-3 px-1 border-2 flex flex-col items-center gap-0.5 transition-all ${
+                    isSelected
+                      ? 'border-purple-600 bg-purple-600 shadow-lg scale-105'
+                      : isOccupied
+                      ? 'bg-purple-50 border-purple-300 hover:border-purple-500'
+                      : 'bg-green-50 border-green-300 hover:border-green-500'
+                  }`}
+                >
+                  <span className={`text-xs font-bold leading-none text-center px-0.5 ${isSelected ? 'text-white' : isOccupied ? 'text-purple-700' : 'text-green-700'}`}>{getRoomLabel(n)}</span>
+                  {isOccupied && !isSelected && <span className="text-xs font-medium text-purple-600 leading-none">₹{rTotal}</span>}
+                  {!isOccupied && <span className={`text-xs leading-none ${isSelected ? 'text-white/70' : 'text-green-500'}`}>Free</span>}
+                  {isOccupied && <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-purple-500 rounded-full animate-pulse"></span>}
+                </button>
+              );
+            })}
+          </div>
+          {activeRoomOrders.length === 0 && (
+            <p className="text-center text-gray-400 text-xs mt-4">No active room orders</p>
+          )}
+        </div>
+      </div>
+
+      {/* Room Detail */}
+      <div className="flex-1 min-w-0">
+        {!selectedRoom ? (
+          <div className="h-full flex items-center justify-center text-gray-400">
+            <div className="text-center">
+              <div className="text-5xl mb-3 opacity-30">🏨</div>
+              <p className="text-sm">Select a room to view details</p>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden flex flex-col" style={{maxHeight:'calc(100vh - 200px)', minHeight:'420px'}}>
+            {/* Header — pinned */}
+            <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-purple-50 to-white border-b border-gray-100 shrink-0">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">{getRoomLabel(selectedRoom)}</h3>
+                <p className="text-sm text-gray-400 mt-0.5">{selectedOrders.length > 0 ? `${selectedOrders.length} order(s) · ${firstOrder?.customerName || ''}` : 'No orders'}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-400">Total</p>
+                <p className="text-3xl font-bold text-purple-600">₹{selectedTotal}</p>
+              </div>
+            </div>
+
+            {/* Items — scrollable */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 border-b border-gray-100">
+              {Object.values(combinedItems).length > 0 ? (
+                <>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Items</p>
+                  <div className="space-y-1">
+                    {Object.values(combinedItems).map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center py-1.5 border-b border-gray-50 last:border-0">
+                        <div>
+                          <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                          <span className="text-xs text-gray-400 ml-2">× {item.quantity}</span>
+                        </div>
+                        <span className="text-sm font-semibold text-gray-700">₹{item.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-between items-center pt-3 mt-2 border-t-2 border-gray-200">
+                    <span className="font-bold text-gray-800">Total</span>
+                    <span className="text-xl font-bold text-purple-600">₹{selectedTotal}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-center text-gray-400 text-sm py-6">No orders for this room</p>
+              )}
+            </div>
+
+            {/* Status badges — pinned */}
+            {selectedOrders.length > 0 && (
+              <div className="px-5 py-3 border-b border-gray-100 flex gap-2 flex-wrap shrink-0">
+                {selectedOrders.map(o => (
+                  <span key={o._id} className={`text-xs px-3 py-1 rounded-full font-semibold ${
+                    o.status === 'pending' ? 'bg-yellow-100 text-yellow-700'
+                    : o.status === 'preparing' ? 'bg-blue-100 text-blue-700'
+                    : o.status === 'ready' ? 'bg-green-100 text-green-700'
+                    : 'bg-gray-100 text-gray-500'
+                  }`}>{o.status}</span>
+                ))}
+              </div>
+            )}
+
+            {/* Action buttons — always visible at bottom */}
+            <div className="px-5 py-4 flex flex-wrap gap-3 shrink-0 bg-white border-t border-gray-100">
+              <button
+                onClick={() => printKitchenOrder(selectedRoom, selectedOrders)}
+                className="px-5 py-2.5 bg-orange-500 text-white rounded-lg text-sm font-semibold hover:bg-orange-600 transition-colors"
+              >Print KOT</button>
+              <button
+                onClick={() => printReceipt(selectedRoom, selectedOrders, selectedTotal)}
+                className="px-5 py-2.5 bg-blue-500 text-white rounded-lg text-sm font-semibold hover:bg-blue-600 transition-colors"
+              >Print Bill</button>
+              <button
+                onClick={() => clearRoomAndSaveToHistory(selectedRoom, selectedOrders, selectedTotal)}
+                className="px-5 py-2.5 bg-purple-500 text-white rounded-lg text-sm font-semibold hover:bg-purple-600 transition-colors"
+              >Clear {getRoomLabel(selectedRoom)}</button>
+              {firstOrder && (firstOrder.status === 'completed' || firstOrder.status === 'pending') && (
+                <button
+                  onClick={() => openEditOrderModal(firstOrder)}
+                  className="px-5 py-2.5 bg-green-500 text-white rounded-lg text-sm font-semibold hover:bg-green-600 transition-colors"
+                >Edit Order</button>
+              )}
+              {firstOrder && firstOrder.status !== 'completed' && firstOrder.status !== 'cancelled' && (
+                <button
+                  onClick={() => cancelOrder(firstOrder)}
+                  className="px-5 py-2.5 bg-red-500 text-white rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors"
+                >Cancel</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Collapsible category accordion with per-item toggles
+function CategoryAccordion({ cat, hidden, menuOff, catMessages, catItems, visibleCount, onToggleCategory, onSaveCatMessage, onToggleItem }) {
+  const [open, setOpen] = useState(false);
+  const [msgVal, setMsgVal] = useState(catMessages[cat] || '');
+
+  // Sync message when prop changes (e.g. after save)
+  useEffect(() => {
+    setMsgVal(catMessages[cat] || '');
+  }, [catMessages, cat]);
+
+  return (
+    <div className={`rounded-xl border overflow-hidden mb-2 ${hidden || menuOff ? 'border-red-100' : 'border-gray-200'}`}>
+      {/* Category header row */}
+      <div className={`flex items-center gap-3 px-4 py-3 ${hidden || menuOff ? 'bg-red-50' : 'bg-white'}`}>
+        {/* Expand arrow */}
+        <button onClick={() => setOpen(o => !o)} className="p-0.5 text-gray-400 hover:text-gray-600 shrink-0">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            {open
+              ? <path d="M3 6l5 5 5-5" />
+              : <path d="M6 3l5 5-5 5" />
+            }
+          </svg>
+        </button>
+
+        {/* Category name + count — clicking also toggles expand */}
+        <button onClick={() => setOpen(o => !o)} className="flex-1 flex items-center gap-2 text-left min-w-0">
+          <span className={`text-sm font-semibold truncate ${hidden || menuOff ? 'text-red-500' : 'text-gray-800'}`}>{cat}</span>
+          <span className="text-xs text-gray-400 shrink-0">{visibleCount}/{catItems.length} visible</span>
+          {hidden && <span className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full font-medium shrink-0">Category Hidden</span>}
+        </button>
+
+        {/* Category visibility toggle */}
+        <button
+          disabled={menuOff}
+          onClick={onToggleCategory}
+          title={hidden ? 'Show category' : 'Hide category'}
+          className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${menuOff ? 'bg-gray-200 cursor-not-allowed' : hidden ? 'bg-red-300' : 'bg-green-500'}`}
+        >
+          <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${hidden ? 'left-0.5' : 'left-6'}`} />
+        </button>
+      </div>
+
+      {/* Custom message when category hidden */}
+      {hidden && !menuOff && (
+        <div className="px-4 pb-3 bg-red-50 flex gap-2">
+          <input
+            value={msgVal}
+            onChange={e => setMsgVal(e.target.value)}
+            placeholder={`e.g. ${cat} not available right now`}
+            className="flex-1 text-xs border border-red-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-red-300 bg-white"
+          />
+          <button onClick={() => onSaveCatMessage(msgVal)} className="px-2 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600">Save</button>
+        </div>
+      )}
+
+      {/* Items list — shown when expanded */}
+      {open && (
+        <div className="border-t border-gray-100 divide-y divide-gray-50 bg-gray-50">
+          {catItems.length === 0 && <p className="text-xs text-gray-400 px-4 py-3">No items</p>}
+          {catItems.map(item => (
+            <div key={item._id} className={`flex items-center gap-3 px-4 py-2.5 ${!item.available ? 'bg-gray-100' : 'bg-white'}`}>
+              <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${item.isVeg ? 'bg-green-500' : 'bg-red-500'}`} />
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm font-medium truncate ${!item.available ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{item.name}</p>
+                <p className="text-xs text-gray-400">₹{item.price}</p>
+              </div>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold shrink-0 ${item.available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                {item.available ? 'Visible' : 'Hidden'}
+              </span>
+              <button
+                onClick={() => onToggleItem(item)}
+                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${item.available ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${item.available ? 'left-6' : 'left-0.5'}`} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function RestaurantDashboard() {
+  const navigate = useNavigate();
+  const { isFeatureEnabled } = useFeatures();
+
+  // ── Shared print helper — mirrors StaffDashboard.printViaIframe exactly ──
+  // v2: Capacitor smartPrint, Electron type-aware, browser blob-URL print
+  const printViaIframeRD = (html, type = 'bill', orderData = null) => {
+    // On mobile (Capacitor) — route through smartPrint which uses BT ESC/POS
+    if (window.Capacitor?.isNativePlatform?.() || window._isCapacitor) {
+      smartPrint(html, type, orderData);
+      return;
+    }
+    // Electron desktop — silent print, choosing printer by type
+    if (window.electronAPI?.silentPrint) {
+      const restaurantId = localStorage.getItem('restaurantId');
+      const saved = JSON.parse(localStorage.getItem('printer_settings_' + restaurantId) || '{}');
+      const printerName = type === 'kitchen'
+        ? (saved.qzKitchenPrinter || saved.kitchenPrinterName || '')
+        : (saved.qzBillPrinter   || saved.cashCounterPrinterName || '');
+      window.electronAPI.silentPrint(html, printerName);
+      return;
+    }
+    // Browser: use blob URL — avoids popup blocker AND cross-origin iframe issues
+    try {
+      const blob = new Blob([html], { type: 'text/html' });
+      const url  = URL.createObjectURL(blob);
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;height:600px;border:none;';
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        try {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        } catch(e) {}
+        setTimeout(() => {
+          try { document.body.removeChild(iframe); } catch(e) {}
+          URL.revokeObjectURL(url);
+        }, 4000);
+      };
+      iframe.src = url;
+    } catch(e) {
+      // Last resort: popup
+      const w = window.open('', '_blank', 'width=420,height=700');
+      if (w) {
+        w.document.write(html);
+        w.document.close();
+        setTimeout(() => { w.focus(); w.print(); w.onafterprint = () => w.close(); }, 350);
+      }
+    }
+  };
+
+  const openPrintWindow = (html, type = 'bill', orderData = null) => {
+    printViaIframeRD(html, type, orderData);
+  };
+
+  const doPrint = (fullHtml, type = 'bill', orderData = null) => {
+    printViaIframeRD(fullHtml, type, orderData);
+  };
+  const [restaurant, setRestaurant] = useState(null);
+  const [orders, setOrders] = useState([]);
+  const [completedOrdersLoaded, setCompletedOrdersLoaded] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [menuVisibilitySaving, setMenuVisibilitySaving] = useState(false);
+  const [menuOffMsgDraft, setMenuOffMsgDraft] = useState('');
+  const [feedback, setFeedback] = useState([]);
+  const [feedbackStats, setFeedbackStats] = useState(null);
+  const [activeTab, setActiveTab] = useState(() => {
+    // Set default tab based on available features - Staff Order comes first
+    if (isFeatureEnabled('staffOrders')) return 'Staff';
+    if (isFeatureEnabled('deliveryOrders')) return 'delivery';
+    if (isFeatureEnabled('orderManagement')) return 'dine-in';
+    if (isFeatureEnabled('menuManagement')) return 'menu';
+    if (isFeatureEnabled('qrCodeGeneration')) return 'qr';
+    if (isFeatureEnabled('orderHistory')) return 'history';
+    if (isFeatureEnabled('customerFeedback')) return 'feedback';
+    return 'Staff'; // fallback to staff orders
+  });
+
+  // Effect to handle tab switching when features change
+  useEffect(() => {
+    // If current tab is disabled, switch to the first available tab
+    if (activeTab === 'Staff' && !isFeatureEnabled('staffOrders')) {
+      if (isFeatureEnabled('deliveryOrders')) {
+        setActiveTab('delivery');
+      } else if (isFeatureEnabled('orderManagement')) {
+        setActiveTab('dine-in');
+      } else if (isFeatureEnabled('menuManagement')) {
+        setActiveTab('menu');
+      } else if (isFeatureEnabled('qrCodeGeneration')) {
+        setActiveTab('qr');
+      } else if (isFeatureEnabled('orderHistory')) {
+        setActiveTab('history');
+      } else if (isFeatureEnabled('customerFeedback')) {
+        setActiveTab('feedback');
+      }
+    }
+    // Handle other disabled tabs
+    if (activeTab === 'delivery' && !isFeatureEnabled('deliveryOrders')) {
+      setActiveTab('Staff');
+    }
+    if (activeTab === 'feedback' && !isFeatureEnabled('customerFeedback')) {
+      setActiveTab('Staff');
+    }
+  }, [activeTab, isFeatureEnabled]);
+  const [showMenuForm, setShowMenuForm] = useState(false);
+  const [importingMenu, setImportingMenu] = useState(false);
+
+  // ── New feature state ──
+  const [storeOnline, setStoreOnline] = useState(true); // will sync from restaurant.features below
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerSearch, setDrawerSearch] = useState('');
+  const [topSearch, setTopSearch] = useState('');
+  const [showOccasionalHours, setShowOccasionalHours] = useState(false);
+  const [occasionalHours, setOccasionalHours] = useState([]);
+  const [newOccasional, setNewOccasional] = useState({ label: '', date: '', openTime: '', closeTime: '' });
+  const [orderWorkflowTab, setOrderWorkflowTab] = useState('all');
+  const [activeBottomTab, setActiveBottomTab] = useState('orders');
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const [historySearch, setHistorySearch] = useState('');
+  const [clearTableModal, setClearTableModal] = useState(null); // { tableNumber, tableOrders, totalAmount }
+  const [shiftModal, setShiftModal] = useState(null); // { orders, type: 'table'|'room', current: number }
+  const [confirmModal, setConfirmModal] = useState(null); // { message, onConfirm }
+  const [toast, setToast] = useState(null); // { message, type: 'success'|'error' }
+  const [onlinePayStep, setOnlinePayStep] = useState(false); // show online sub-screen
+  const [onlinePayType, setOnlinePayType] = useState('upi'); // 'upi' | 'netbanking'
+  const [utrNumber, setUtrNumber] = useState('');
+  const [editingItem, setEditingItem] = useState(null);
+  const [menuForm, setMenuForm] = useState({
+    name: '', price: '', category: '', description: '', isVeg: true, image: ''
+  });
+  const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
+  const [newCategoryValue, setNewCategoryValue] = useState('');
+  const [imageUploadMethod, setImageUploadMethod] = useState('url'); // 'url' or 'upload'
+  const [imageFile, setImageFile] = useState(null);
+
+  // Staff Order State
+  const [receptionistOrder, setReceptionistOrder] = useState({
+    customerName: '',
+    customerPhone: '',
+    orderType: 'takeaway',
+    deliveryAddress: '',
+    tableNumber: '',
+    roomNumber: '',
+    items: [],
+    specialInstructions: '',
+    waiterId: '',
+    waiterNumber: '',
+    packagingCharge: 0,
+    deliveryCharge: 0,
+  });
+  // Staff page view: 'tables' = table grid, 'order' = ordering interface
+  const [staffView, setStaffView] = useState('tables');
+  const [staffSelectedTable, setStaffSelectedTable] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [staffSearchQuery, setStaffSearchQuery] = useState('');
+  const [editOrderSearchQuery, setEditOrderSearchQuery] = useState('');
+  const [menuSearchQuery, setMenuSearchQuery] = useState('');
+  const [arrangeMode, setArrangeMode] = useState(false);
+  const [menuSubTab, setMenuSubTab] = useState('items'); // 'items' | 'visibility'
+  const [orderedCategories, setOrderedCategories] = useState([]);
+  const [orderedMenu, setOrderedMenu] = useState([]);
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+  const dragType = useRef(null); // 'category' | 'item'
+  const dragItemCategory = useRef(null);  const menuSearchInputRef = useRef(null);
+  const [availableWaiters, setAvailableWaiters] = useState([]);
+  const [successMessage, setSuccessMessage] = useState('');
+  // Room name editing state: { roomNum, name } | null
+  const [editingRoomName, setEditingRoomName] = useState(null);
+  
+  // State to store the last created order for printing
+  const [lastCreatedOrder, setLastCreatedOrder] = useState(null);
+  
+  // Edit Order State (for completed staff orders only)
+  const [editingOrder, setEditingOrder] = useState(null);
+  const [showEditOrderModal, setShowEditOrderModal] = useState(false);
+
+  useEffect(() => {
+    const restaurantId = localStorage.getItem('restaurantId');
+    if (!restaurantId) {
+      navigate('/restaurant-login');
+      return;
+    }
+
+    fetchRestaurant(restaurantId);
+    fetchOrders(restaurantId);
+    fetchFeedback(restaurantId);
+    fetchFeedbackStats(restaurantId);
+    fetchWaiters(restaurantId);
+    
+    // Sync printer settings from database
+    loadPrinterSettingsFromAPI().catch(error => {
+      console.log('Printer settings sync failed, using localStorage:', error.message);
+    });
+
+    // Connect to appropriate server WebSocket based on environment
+    const socketUrl = getWebSocketUrl();
+    
+    console.log('🔌 WebSocket Configuration:', getEnvironmentInfo());
+    
+    const socket = io(socketUrl, {
+      transports: ['websocket', 'polling'],
+      timeout: 20000,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
+      reconnectionAttempts: Infinity,  // keep trying forever — ERR_INTERNET_DISCONNECTED is transient
+    });
+    
+    socket.emit('join-restaurant', restaurantId);
+    
+    socket.on('connect', () => {
+      console.log('Connected to WaitNot server');
+      // Re-join restaurant room on reconnection
+      socket.emit('join-restaurant', restaurantId);
+      // Re-fetch active orders on reconnect to ensure sync
+      fetchOrders(restaurantId);
+    });
+    
+    socket.on('disconnect', () => {
+      console.log('Disconnected from WaitNot server');
+    });
+    
+    socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+    });
+    
+    socket.on('new-order', (order) => {
+      setOrders(prev => [order, ...prev]);
+      
+      // Play notification sound for new order
+      notificationSound.playNewOrderSound();
+      
+      // Track new order event
+      trackRestaurantEvent('new_order_received', restaurantId, {
+        order_id: order._id,
+        order_type: order.orderType,
+        total_amount: order.totalAmount,
+        customer_name: order.customerName
+      });
+    });
+
+    socket.on('order-updated', (updatedOrder) => {
+      setOrders(prev => {
+        // Remove if completed/cancelled, otherwise update
+        if (updatedOrder.status === 'completed' || updatedOrder.status === 'cancelled') {
+          return prev.filter(o => o._id !== updatedOrder._id);
+        }
+        const exists = prev.some(o => o._id === updatedOrder._id);
+        if (exists) {
+          return prev.map(o => o._id === updatedOrder._id ? updatedOrder : o);
+        }
+        return [updatedOrder, ...prev];
+      });
+    });
+
+    // Batch update (e.g. clear table from mobile)
+    socket.on('orders-updated', ({ orderIds, updateData }) => {
+      setOrders(prev => {
+        // If status is completed/cancelled, remove those orders
+        if (updateData.status === 'completed' || updateData.status === 'cancelled') {
+          return prev.filter(o => !orderIds.includes(o._id));
+        }
+        return prev.map(o => {
+          if (!orderIds.includes(o._id)) return o;
+          const patch = {};
+          if (updateData.status) patch.status = updateData.status;
+          if (updateData.payment_method) patch.paymentMethod = updateData.payment_method;
+          if (updateData.payment_status) patch.paymentStatus = updateData.payment_status;
+          return { ...o, ...patch };
+        });
+      });
+    });
+
+    socket.on('order-deleted', ({ orderId }) => {
+      setOrders(prev => prev.filter(o => o._id !== orderId));
+    });
+
+    // orders-merged: StaffDashboard clears a table → remove originals, add merged
+    socket.on('orders-merged', ({ orderIds, mergedOrder }) => {
+      setOrders(prev => {
+        const filtered = prev.filter(o => !orderIds.includes(o._id));
+        // mergedOrder is completed — don't add it back to active list
+        return filtered;
+      });
+    });
+
+    // Safety-net poll every 30s to catch any missed socket events
+    const pollInterval = setInterval(() => {
+      const id = localStorage.getItem('restaurantId');
+      if (id) fetchOrders(id);
+    }, 30000);
+
+    return () => { socket.disconnect(); clearInterval(pollInterval); };
+  }, []);
+
+  // Keyboard shortcuts for menu search
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === '/' && activeTab === 'menu' && menuSearchInputRef.current) {
+        e.preventDefault();
+        menuSearchInputRef.current.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab]);
+
+  // Load completed orders every time the history tab opens (fresh fetch)
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    const restaurantId = localStorage.getItem('restaurantId');
+    if (!restaurantId) return;
+    setHistoryLoading(true);
+    axios.get(`/api/orders/restaurant/${restaurantId}?status=completed`)
+      .then(({ data }) => {
+        setOrders(prev => {
+          const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+          return [...activeOrders, ...data];
+        });
+        setCompletedOrdersLoaded(true);
+      })
+      .catch(e => console.error('Failed to load completed orders:', e))
+      .finally(() => setHistoryLoading(false));
+  }, [activeTab]);
+
+  // Lock body scroll when Staff Order tab is in order view (POS mode)
+  useEffect(() => {
+    const isLocked = activeTab === 'Staff';
+    if (isLocked) {
+      document.documentElement.style.overflow = 'hidden';
+      document.body.style.overflow = 'hidden';
+      document.body.style.height = '100vh';
+    } else {
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
+      document.body.style.height = '';
+    }
+    return () => {
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
+      document.body.style.height = '';
+    };
+  }, [activeTab]);
+
+  const fetchRestaurant = async (id) => {
+    try {
+      const { data } = await axios.get(`/api/restaurants/${id}`);
+      setRestaurant(data);
+      setStoreOnline(data.features?.qrOrderingEnabled !== false);
+      setOccasionalHours(data.features?.occasionalHours || []);
+    } catch (error) {
+      console.error('Error fetching restaurant:', error);
+    }
+  };
+
+  const toggleStoreOnline = async () => {
+    const next = !storeOnline;
+    setStoreOnline(next);
+    const updated = { ...restaurant?.features, qrOrderingEnabled: next };
+    await saveMenuVisibility(updated);
+    showToast(next ? '✅ Store is now Online' : '⚠️ Store is now Offline', next ? 'success' : 'error');
+  };
+
+  const saveOccasionalHour = async (updated) => {
+    setOccasionalHours(updated);
+    await saveMenuVisibility({ ...restaurant?.features, occasionalHours: updated });
+  };
+
+  const fetchOrders = async (id, retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const { data } = await axios.get(`/api/orders/restaurant/${id}?status=active`, { timeout: 60000 });
+        // Merge: keep completed orders already loaded, replace active ones
+        setOrders(prev => {
+          const completed = prev.filter(o => o.status === 'completed');
+          return [...data, ...completed];
+        });
+        return;
+      } catch (error) {
+        console.warn(`fetchOrders attempt ${i + 1} failed:`, error?.message);
+        if (i < retries - 1) await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  };
+
+  const fetchFeedback = async (id) => {
+    try {
+      const { data } = await axios.get(`/api/feedback/restaurant/${id}`);
+      setFeedback(data);
+    } catch (error) {
+      console.error('Error fetching feedback:', error);
+    }
+  };
+
+  const fetchFeedbackStats = async (id) => {
+    try {
+      const { data } = await axios.get(`/api/feedback/restaurant/${id}/stats`);
+      setFeedbackStats(data);
+    } catch (error) {
+      console.error('Error fetching feedback stats:', error);
+    }
+  };
+
+  const fetchWaiters = async (id) => {
+    try {
+      const { data } = await axios.get(`/api/staff/restaurant/${id}`);
+      const waiters = data.filter(staff => staff.role === 'waiter' && staff.is_active);
+      setAvailableWaiters(waiters);
+    } catch (error) {
+      console.error('Error fetching waiters:', error);
+    }
+  };
+
+  const handleFeedbackResponse = async (feedbackId, response) => {
+    try {
+      await axios.patch(`/api/feedback/${feedbackId}/response`, {
+        restaurantResponse: response
+      });
+      
+      // Refresh feedback
+      const restaurantId = localStorage.getItem('restaurantId');
+      await fetchFeedback(restaurantId);
+      await fetchFeedbackStats(restaurantId);
+      
+      showToast('Response sent successfully');
+    } catch (error) {
+      console.error('Error sending feedback response:', error);
+      showToast('Failed to send response', 'error');
+    }
+  };
+
+  const handleFeedbackStatusUpdate = async (feedbackId, status) => {
+    try {
+      await axios.patch(`/api/feedback/${feedbackId}/status`, { status });
+      
+      // Refresh feedback
+      const restaurantId = localStorage.getItem('restaurantId');
+      await fetchFeedback(restaurantId);
+      await fetchFeedbackStats(restaurantId);
+    } catch (error) {
+      console.error('Error updating feedback status:', error);
+      showToast('Failed to update feedback status', 'error');
+    }
+  };
+
+  const updateOrderStatus = async (orderId, status) => {
+    try {
+      await axios.patch(`/api/orders/${orderId}/status`, { status });
+    } catch (error) {
+      console.error('Error updating order:', error);
+    }
+  };
+
+  // Use the getPrinterSettings from customBillGenerator utility
+
+  // Notification Sound Settings
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [notificationEnabled, setNotificationEnabled] = useState(() => notificationSound.getEnabled());
+  const [notificationVolume, setNotificationVolume] = useState(() => notificationSound.getVolume());
+
+  const handleNotificationToggle = (enabled) => {
+    setNotificationEnabled(enabled);
+    notificationSound.setEnabled(enabled);
+    
+    // Track notification settings change
+    trackRestaurantEvent('notification_settings_changed', restaurant?._id, {
+      enabled: enabled,
+      volume: notificationVolume
+    });
+  };
+
+  const handleVolumeChange = (volume) => {
+    setNotificationVolume(volume);
+    notificationSound.setVolume(volume);
+    
+    // Track volume change
+    trackRestaurantEvent('notification_volume_changed', restaurant?._id, {
+      volume: volume
+    });
+  };
+
+  const testNotificationSound = () => {
+    const success = notificationSound.testSound();
+    if (success) {
+      showToast('Test sound played successfully');
+    } else {
+      showToast('Failed to play test sound — check browser settings', 'error');
+    }
+    
+    // Track test sound
+    trackRestaurantEvent('notification_sound_tested', restaurant?._id, {
+      success: success
+    });
+  };
+
+  // Check if table has unprinted items for kitchen
+  const hasUnprintedKitchenItems = (tableOrders) => {
+    return tableOrders.some(order => 
+      order.items.some(item => !item.printed_to_kitchen)
+    );
+  };
+
+  // Mark items as printed to kitchen
+  const markItemsAsPrintedToKitchen = async (tableOrders) => {
+    try {
+      const restaurantId = localStorage.getItem('restaurantId');
+      
+      // Update each order's items to mark them as printed to kitchen
+      for (const order of tableOrders) {
+        const updatedItems = order.items.map(item => ({
+          ...item,
+          printed_to_kitchen: true
+        }));
+        
+        // Update the order in the backend
+        await axios.patch(`/api/orders/${order._id}/items`, { items: updatedItems });
+      }
+      
+      // Refresh orders to update UI
+      await fetchOrders(restaurantId);
+    } catch (error) {
+      console.error('Error marking items as printed to kitchen:', error);
+    }
+  };
+
+  const handleMenuSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const restaurantId = localStorage.getItem('restaurantId');
+      if (editingItem) {
+        await axios.put(`/api/restaurants/${restaurantId}/menu/${editingItem._id}`, menuForm);
+      } else {
+        await axios.post(`/api/restaurants/${restaurantId}/menu`, menuForm);
+      }
+      fetchRestaurant(restaurantId);
+      setShowMenuForm(false);
+      setEditingItem(null);
+      setMenuForm({ name: '', price: '', category: '', description: '', isVeg: true });
+      setShowNewCategoryInput(false);
+      setNewCategoryValue('');
+    } catch (error) {
+      console.error('Error saving menu item:', error);
+    }
+  };
+
+  const handleImportMenu = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    try {
+      setImportingMenu(true);
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const items = data.menuItems || data.menu || [];
+      if (!items.length) { alert('No menu items found in file.'); return; }
+      const restaurantId = localStorage.getItem('restaurantId');
+
+      // Fetch current menu to skip already-imported items (resume support)
+      const { data: currentRestaurant } = await axios.get(`/api/restaurants/${restaurantId}`);
+      const existingNames = new Set(
+        (currentRestaurant.menu || []).map(m => m.name.trim().toLowerCase())
+      );
+
+      const pending = items.filter(item => !existingNames.has((item.name || '').trim().toLowerCase()));
+      const skipped = items.length - pending.length;
+
+      if (!pending.length) {
+        alert('All items already imported. Nothing to do.');
+        return;
+      }
+
+      setImportProgress({ current: 0, total: pending.length });
+      for (let i = 0; i < pending.length; i++) {
+        const item = pending[i];
+        await axios.post(`/api/restaurants/${restaurantId}/menu`, {
+          name: item.name,
+          price: item.price,
+          category: item.category || '',
+          description: item.description || '',
+          isVeg: item.isVeg !== undefined ? item.isVeg : true,
+          image: item.image || null,
+          available: item.available !== undefined ? item.available : true,
+          displayOrder: item.displayOrder || null
+        });
+        setImportProgress({ current: i + 1, total: pending.length });
+      }
+      await fetchRestaurant(restaurantId);
+      const msg = skipped > 0
+        ? `✅ Imported ${pending.length} items. Skipped ${skipped} already existing items.`
+        : `✅ Imported ${pending.length} menu items successfully!`;
+      alert(msg);
+    } catch (err) {
+      console.error('Import error:', err);
+      alert('Import failed. Re-import the same file to resume from where it stopped.');
+    } finally {
+      setImportingMenu(false);
+      setImportProgress({ current: 0, total: 0 });
+    }
+  };
+
+  const saveArrangeOrder = async () => {
+    try {
+      const restaurantId = localStorage.getItem('restaurantId');
+      const items = [];
+      let displayOrder = 1;
+      orderedCategories.forEach(cat => {
+        orderedMenu.filter(i => i.category === cat).forEach(item => {
+          items.push({ id: item._id, displayOrder: displayOrder++ });
+        });
+      });
+      await axios.put(`/api/restaurants/${restaurantId}/menu-reorder`, { items });
+      await fetchRestaurant(restaurantId);
+      showToast('Menu order saved successfully');
+    } catch (error) {
+      console.error('Error saving order:', error);
+      showToast(`Failed to save order: ${error.response?.data?.error || error.message}`, 'error');
+    }
+  };
+
+  const deleteMenuItem = async (menuId) => {
+    setConfirmModal({
+      message: 'Delete this menu item? Items in order history will be marked unavailable instead.',
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const restaurantId = localStorage.getItem('restaurantId');
+          const response = await axios.delete(`/api/restaurants/${restaurantId}/menu/${menuId}`);
+          if (response.data.message) {
+            if (response.data.message.includes('marked unavailable') || response.data.message.includes('order history')) {
+              showToast('Menu item removed from availability (exists in order history)', 'error');
+            } else {
+              showToast('Menu item deleted successfully');
+            }
+          }
+          fetchRestaurant(restaurantId);
+        } catch (error) {
+          console.error('Error deleting menu item:', error);
+          if (error.response?.data?.type === 'constraint_violation') {
+            showToast('Item marked unavailable — exists in order history', 'error');
+          } else {
+            showToast('Failed to delete menu item', 'error');
+          }
+          const restaurantId = localStorage.getItem('restaurantId');
+          fetchRestaurant(restaurantId);
+        }
+      }
+    });
+  };
+
+  const handleImageFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      // Check if it's an image file
+      if (!file.type.startsWith('image/')) {
+        showToast('Please select an image file', 'error');
+        return;
+      }
+      
+      // Check file size (max 2MB for images)
+      if (file.size > 2 * 1024 * 1024) {
+        showToast('Image too large — max 2MB', 'error');
+        return;
+      }
+      
+      setImageFile(file);
+      
+      // Convert to base64 and preview
+      const reader = new FileReader();
+      reader.onload = () => {
+        setMenuForm({...menuForm, image: reader.result});
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const addTable = () => {
+    const newTableCount = (restaurant.tables || 0) + 1;
+    setConfirmModal({
+      message: `Add Table ${newTableCount}? A new QR code will be generated for this table.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const restaurantId = localStorage.getItem('restaurantId');
+          await axios.patch(`/api/restaurants/${restaurantId}/tables`, { tables: newTableCount });
+          await fetchRestaurant(restaurantId);
+          showToast(`Table ${newTableCount} added successfully`);
+        } catch (error) {
+          console.error('Error adding table:', error);
+          const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
+          showToast(`Failed to add table: ${errorMsg}`, 'error');
+        }
+      }
+    });
+  };
+
+  const deleteTable = async (tableNum) => {
+    setConfirmModal({
+      message: `Delete Table ${tableNum}? This will remove the last table and its QR code.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const restaurantId = localStorage.getItem('restaurantId');
+          const newTableCount = Math.max(0, (restaurant.tables || 0) - 1);
+          await axios.patch(`/api/restaurants/${restaurantId}/tables`, { tables: newTableCount });
+          await fetchRestaurant(restaurantId);
+          showToast('Table deleted successfully');
+        } catch (error) {
+          console.error('Error deleting table:', error);
+          const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
+          showToast(`Failed to delete table: ${errorMsg}`, 'error');
+        }
+      }
+    });
+  };
+
+  // Save a custom name for a room (stored in features.roomNames)
+  const saveMenuVisibility = async (updatedFeatures) => {
+    // Optimistic update — change UI instantly, save in background
+    setRestaurant(prev => ({ ...prev, features: updatedFeatures }));
+    try {
+      const token = localStorage.getItem('restaurantToken');
+      const restaurantId = localStorage.getItem('restaurantId');
+      await axios.put(`/api/restaurants/${restaurantId}`, { features: updatedFeatures }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch (e) {
+      // Revert on failure
+      fetchRestaurant(localStorage.getItem('restaurantId'));
+      showToast('Failed to save', 'error');
+    }
+  };
+
+  const saveRoomName = async (roomNum, name) => {
+    try {
+      const restaurantId = localStorage.getItem('restaurantId');
+      const currentNames = restaurant.features?.roomNames || {};
+      const updatedNames = { ...currentNames, [roomNum]: name.trim() || `Room ${roomNum}` };
+      const updatedFeatures = { ...restaurant.features, roomNames: updatedNames };
+      await axios.put(`/api/restaurants/${restaurantId}`, { features: updatedFeatures });
+      await fetchRestaurant(restaurantId);
+      setEditingRoomName(null);
+      showToast(`Room ${roomNum} renamed successfully`);
+    } catch (error) {
+      showToast('Failed to save room name', 'error');
+    }
+  };
+
+  const addRoom = () => {
+    const newRoomCount = (restaurant.rooms || 0) + 1;
+    setConfirmModal({
+      message: `Add Room ${newRoomCount}? A new QR code will be generated for this room.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const restaurantId = localStorage.getItem('restaurantId');
+          await axios.patch(`/api/restaurants/${restaurantId}/rooms`, { rooms: newRoomCount });
+          await fetchRestaurant(restaurantId);
+          showToast(`Room ${newRoomCount} added successfully`);
+        } catch (error) {
+          console.error('Error adding room:', error);
+          showToast(`Failed to add room: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  const deleteRoom = async (roomNum) => {
+    setConfirmModal({
+      message: `Delete Room ${roomNum}? This will remove the last room and its QR code.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const restaurantId = localStorage.getItem('restaurantId');
+          const newRoomCount = Math.max(0, (restaurant.rooms || 0) - 1);
+          await axios.patch(`/api/restaurants/${restaurantId}/rooms`, { rooms: newRoomCount });
+          await fetchRestaurant(restaurantId);
+          showToast('Room deleted successfully');
+        } catch (error) {
+          console.error('Error deleting room:', error);
+          showToast(`Failed to delete room: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  const downloadQRCode = async (tableNum, qrUrl) => {
+    try {
+      // Get the QR code image
+      const imgElement = document.querySelector(`#qr-table-${tableNum} img`);
+      if (!imgElement) {
+        showToast('QR code not found', 'error');
+        return;
+      }
+
+      // Create a canvas to draw the QR code with labels
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Set canvas size (larger for print quality)
+      const qrSize = 400;
+      const padding = 60;
+      canvas.width = qrSize + (padding * 2);
+      canvas.height = qrSize + (padding * 3);
+      
+      // Fill white background
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Load and draw QR code
+      const qrImage = new Image();
+      qrImage.crossOrigin = 'anonymous';
+      
+      qrImage.onload = () => {
+        // Draw QR code in center
+        ctx.drawImage(qrImage, padding, padding + 40, qrSize, qrSize);
+        
+        // Add restaurant name at top
+        ctx.fillStyle = 'black';
+        ctx.font = 'bold 32px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(restaurant.name, canvas.width / 2, 40);
+        
+        // Add table number at bottom
+        ctx.font = 'bold 36px Arial';
+        ctx.fillText(`Table ${tableNum}`, canvas.width / 2, qrSize + padding + 80);
+        
+        // Add "Scan to Order" text
+        ctx.font = '20px Arial';
+        ctx.fillStyle = '#666';
+        ctx.fillText('Scan to Order', canvas.width / 2, qrSize + padding + 115);
+        
+        // Download the canvas as PNG
+        canvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${restaurant.name.replace(/\s+/g, '-')}-Table-${tableNum}-QR.png`;
+          link.href = url;
+          link.click();
+          URL.revokeObjectURL(url);
+        });
+      };
+      
+      qrImage.onerror = () => {
+        showToast('Failed to load QR code', 'error');
+      };
+      
+      // Use the API URL to generate QR code
+      qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrUrl)}&margin=20`;
+      
+    } catch (error) {
+      console.error('Error downloading QR code:', error);
+      showToast('Failed to download QR code', 'error');
+    }
+  };
+
+  const downloadRoomQRCode = async (roomNum, qrUrl) => {
+    const roomName = restaurant.features?.roomNames?.[roomNum] || `Room ${roomNum}`;
+    try {
+      const imgElement = document.querySelector(`#qr-room-${roomNum} img`);
+      if (!imgElement) { showToast('QR code not found', 'error'); return; }
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const qrSize = 400;
+      const padding = 60;
+      canvas.width = qrSize + (padding * 2);
+      canvas.height = qrSize + (padding * 3);
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const qrImage = new Image();
+      qrImage.crossOrigin = 'anonymous';
+      qrImage.onload = () => {
+        ctx.drawImage(qrImage, padding, padding + 40, qrSize, qrSize);
+        ctx.fillStyle = 'black';
+        ctx.font = 'bold 32px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(restaurant.name, canvas.width / 2, 40);
+        ctx.font = 'bold 36px Arial';
+        ctx.fillText(roomName, canvas.width / 2, qrSize + padding + 80);
+        ctx.font = '20px Arial';
+        ctx.fillStyle = '#666';
+        ctx.fillText('Scan to Order', canvas.width / 2, qrSize + padding + 115);
+        canvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${restaurant.name.replace(/\s+/g, '-')}-${roomName.replace(/\s+/g, '-')}-QR.png`;
+          link.href = url;
+          link.click();
+          URL.revokeObjectURL(url);
+        });
+      };
+      qrImage.onerror = () => showToast('Failed to load QR code', 'error');
+      qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrUrl)}&margin=20`;
+    } catch (error) {
+      showToast('Failed to download QR code', 'error');
+    }
+  };
+
+  const clearTableAndSaveToHistory = async (tableNumber, tableOrders, totalAmount) => {
+    setClearTableModal({ tableNumber, tableOrders, totalAmount });
+    setOnlinePayStep(false);
+  };
+
+  const clearRoomAndSaveToHistory = async (roomNumber, roomOrders, totalAmount) => {
+    const roomName = restaurant?.features?.roomNames?.[roomNumber] || `Room ${roomNumber}`;
+    setClearTableModal({ tableNumber: roomName, tableOrders: roomOrders, totalAmount });
+    setOnlinePayStep(false);
+  };
+
+  const confirmClearTable = (paymentMethod, paymentSubType, utr) => {
+    const { tableNumber, tableOrders, isIndividual, individualOrder } = clearTableModal;
+    setClearTableModal(null);
+
+    // Individual delivery/takeaway order
+    if (isIndividual && individualOrder) {
+      (async () => {
+        try {
+          await axios.patch(`/api/orders/${individualOrder._id}/payment`, {
+            paymentMethod,
+            paymentSubType: paymentSubType || null,
+            utr: utr || null,
+            paymentStatus: 'paid'
+          });
+          if (individualOrder.status !== 'completed') {
+            await updateOrderStatus(individualOrder._id, 'completed');
+          }
+          showToast('Order cleared and saved to history');
+          const restaurantId = localStorage.getItem('restaurantId');
+          await fetchOrders(restaurantId);
+        } catch (error) {
+          showToast(`Failed to clear order: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      })();
+      return;
+    }
+    setOnlinePayStep(false);
+    setUtrNumber('');
+    setConfirmModal({
+      message: `Confirm clearing Table ${tableNumber}? All orders will be merged into one combined bill.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const orderIds = tableOrders.map(o => o._id);
+          const firstOrder = tableOrders[0];
+          await axios.post('/api/orders/merge-and-complete', {
+            orderIds,
+            paymentMethod,
+            paymentSubType: paymentSubType || null,
+            utrNumber: utr || null,
+            restaurantId: restaurant._id,
+            tableNumber: firstOrder?.tableNumber,
+            roomNumber: firstOrder?.roomNumber,
+            orderType: firstOrder?.orderType,
+            customerName: firstOrder?.customerName,
+          });
+
+          const sessionKey = `table_session_${restaurant._id}_${tableNumber}`;
+          localStorage.removeItem(sessionKey);
+          const restaurantId = localStorage.getItem('restaurantId');
+          await fetchOrders(restaurantId);
+          showToast(`Table ${tableNumber} cleared — saved as combined bill`);
+        } catch (error) {
+          console.error('❌ Error clearing table:', error);
+          showToast(`Failed to clear table: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  const clearIndividualOrder = async (order) => {
+    console.log('Clear Individual Order clicked:', { orderId: order._id, customer: order.customerName, total: order.totalAmount });
+
+    // For delivery/takeaway orders, show payment modal
+    if (order.orderType === 'delivery' || order.orderType === 'takeaway') {
+      setClearTableModal({
+        tableNumber: order.orderType === 'delivery' ? `Delivery - ${order.customerName || ''}` : `Takeaway - ${order.customerName || ''}`,
+        tableOrders: [order],
+        totalAmount: order.totalAmount,
+        isIndividual: true,
+        individualOrder: order
+      });
+      setOnlinePayStep(false);
+      return;
+    }
+
+    const orderTypeText = order.orderType === 'takeaway' ? 'Takeaway' : 'Order';
+
+    setConfirmModal({
+      message: `Clear ${orderTypeText} for ${order.customerName} (₹${order.totalAmount})? This will save it to order history and mark it as completed.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          if (order.status !== 'completed') await updateOrderStatus(order._id, 'completed');
+          showToast('Order cleared and saved to history');
+          const restaurantId = localStorage.getItem('restaurantId');
+          await fetchOrders(restaurantId);
+        } catch (error) {
+          console.error('❌ Error clearing individual order:', error);
+          showToast(`Failed to clear order: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  const printReceipt = (tableNumber, tableOrders, totalAmount) => {
+    const settings = getPrinterSettings();
+    const firstOrder = tableOrders[0] || {};
+    const firstOrderType = firstOrder.orderType || 'dine-in';
+    const slotLabel = (firstOrderType === 'room' ? 'ROOM ' : 'TABLE ') + tableNumber;
+
+    const allItems = {};
+    tableOrders.forEach(o => o.items.forEach(i => {
+      const price = parseFloat(i.price) || 0;
+      const qty = parseInt(i.quantity) || 1;
+      if (allItems[i.name]) { allItems[i.name].quantity += qty; }
+      else allItems[i.name] = { name: i.name, price, quantity: qty };
+    }));
+
+    const html = buildBillHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderType: firstOrderType,
+      customerName: firstOrder.customerName,
+      customerPhone: firstOrder.customerPhone,
+      items: Object.values(allItems),
+      paymentMethod: firstOrder.paymentMethod,
+    });
+    printViaIframeRD(html, 'bill', { orders: tableOrders, tableLabel: slotLabel, total: totalAmount, restaurantName: restaurant.name });
+  };
+
+  // Returns receipt HTML for an individual order
+  const printIndividualReceiptHTML = (order) => {
+    const slotLabel = order.tableNumber ? 'TABLE ' + order.tableNumber
+      : order.roomNumber ? 'ROOM ' + order.roomNumber
+      : order.orderType === 'delivery' ? 'DELIVERY'
+      : order.orderType === 'takeaway' ? 'TAKEAWAY'
+      : null;
+    // Only use charges appropriate for this order type
+    const pkgCharge = order.orderType === 'takeaway' ? (parseFloat(order.packagingCharge) || 0) : 0;
+    const dlvCharge = order.orderType === 'delivery' ? (parseFloat(order.deliveryCharge) || 0) : 0;
+    return buildBillHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderType: order.orderType,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      deliveryAddress: order.deliveryAddress,
+      items: order.items || [],
+      packagingCharge: pkgCharge,
+      deliveryCharge: dlvCharge,
+      paymentMethod: order.paymentMethod,
+    });
+  };
+
+  const printIndividualReceipt = (order) => {
+    const settings = getPrinterSettings();
+    const slotLabel = order.tableNumber ? 'TABLE ' + order.tableNumber
+      : order.roomNumber ? 'ROOM ' + order.roomNumber
+      : order.orderType === 'delivery' ? 'DELIVERY'
+      : order.orderType === 'takeaway' ? 'TAKEAWAY'
+      : null;
+    // Only use charges appropriate for this order type
+    const pkgCharge = order.orderType === 'takeaway' ? (parseFloat(order.packagingCharge) || 0) : 0;
+    const dlvCharge = order.orderType === 'delivery' ? (parseFloat(order.deliveryCharge) || 0) : 0;
+    const html = buildBillHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderType: order.orderType,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      deliveryAddress: order.deliveryAddress,
+      items: order.items || [],
+      packagingCharge: pkgCharge,
+      deliveryCharge: dlvCharge,
+      paymentMethod: order.paymentMethod,
+    });
+    printViaIframeRD(html, 'bill', { orders: [order], tableLabel: slotLabel, restaurantName: restaurant.name, packagingCharge: pkgCharge, deliveryCharge: dlvCharge });
+  };
+
+  const printKitchenOrder = (tableNumber, tableOrders) => {
+    const settings = getPrinterSettings();
+    const firstOrderType = tableOrders[0]?.orderType || 'dine-in';
+    const slotLabel = firstOrderType === 'room' ? `ROOM ${tableNumber}` : `TABLE ${tableNumber}`;
+
+    // Merge all items (print everything, not just unprinted)
+    const allItems = {};
+    tableOrders.forEach(order => {
+      (order.items || []).forEach(item => {
+        if (allItems[item.name]) allItems[item.name].quantity += (item.quantity || 1);
+        else allItems[item.name] = { name: item.name, price: item.price, quantity: item.quantity || 1 };
+      });
+    });
+
+    const receiptWidth = settings.kitchenReceiptSize === '58mm' ? '58mm' : '80mm';
+    const html = buildKOTHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderId: `${tableOrders.length > 1 ? tableOrders.length + ' ORDERS' : tableOrders[0]?._id?.slice(-8).toUpperCase()}`,
+      orderType: firstOrderType,
+      customerName: tableOrders[0]?.customerName,
+      specialInstructions: tableOrders[0]?.specialInstructions,
+      items: Object.values(allItems),
+      width: receiptWidth,
+    });
+    const merged = { ...tableOrders[0], items: Object.values(allItems) };
+    printViaIframeRD(html, 'kitchen', { order: merged, restaurantName: restaurant.name });
+    // Mark items as printed to kitchen
+    markItemsAsPrintedToKitchen(tableOrders);
+  };
+
+  const printKitchenOrderIndividual = (order) => {
+    const settings = getPrinterSettings();
+    const receiptWidth = settings.kitchenReceiptSize === '58mm' ? '58mm' : '80mm';
+    const slotLabel = order.orderType === 'delivery' ? 'DELIVERY'
+      : order.orderType === 'room' ? `ROOM ${order.roomNumber}`
+      : `TABLE ${order.tableNumber}`;
+
+    const html = buildKOTHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderId: order._id.slice(-6).toUpperCase(),
+      orderType: order.orderType,
+      customerName: order.customerName,
+      deliveryAddress: order.deliveryAddress,
+      specialInstructions: order.specialInstructions,
+      items: order.items || [],
+      width: receiptWidth,
+    });
+    printViaIframeRD(html, 'kitchen', { order, restaurantName: restaurant.name });
+    markItemsAsPrintedToKitchen([order]);
+  };
+
+  // Staff Order Functions
+  const updateReceptionistOrderItem = (item, quantityChange) => {
+    setReceptionistOrder(prevOrder => {
+      const existingItemIndex = prevOrder.items.findIndex(orderItem => orderItem._id === item._id);
+      let newItems = [...prevOrder.items];
+
+      if (existingItemIndex >= 0) {
+        // Item exists, update quantity
+        const newQuantity = newItems[existingItemIndex].quantity + quantityChange;
+        if (newQuantity <= 0) {
+          // Remove item if quantity becomes 0 or less
+          newItems.splice(existingItemIndex, 1);
+        } else {
+          newItems[existingItemIndex].quantity = newQuantity;
+        }
+      } else if (quantityChange > 0) {
+        // Add new item
+        newItems.push({
+          _id: item._id,
+          name: item.name,
+          price: item.price,
+          category: item.category,
+          quantity: quantityChange
+        });
+      }
+
+      return { ...prevOrder, items: newItems };
+    });
+  };
+
+  // Print KOT without saving order
+  const printStaffKOTOnly = () => {
+    if (receptionistOrder.items.length === 0) { showToast('Please select at least one item', 'error'); return; }
+    if (receptionistOrder.orderType === 'delivery' && !receptionistOrder.deliveryAddress) { showToast('Please enter a delivery address', 'error'); return; }
+    if (receptionistOrder.orderType === 'dine-in' && !receptionistOrder.tableNumber) { showToast('Please select a table number', 'error'); return; }
+    const subtotal = receptionistOrder.items.filter(i => !i.complimentary).reduce((s, i) => s + i.price * i.quantity, 0);
+    const extraCharge = receptionistOrder.orderType === 'takeaway' ? (receptionistOrder.packagingCharge || 0) : receptionistOrder.orderType === 'delivery' ? (receptionistOrder.deliveryCharge || 0) : 0;
+    printStaffKOT({
+      _id: `TEMP-${Date.now()}`,
+      customerName: receptionistOrder.customerName || 'Guest Customer',
+      customerPhone: receptionistOrder.customerPhone || '',
+      orderType: receptionistOrder.orderType,
+      items: receptionistOrder.items,
+      totalAmount: subtotal + extraCharge,
+      packagingCharge: receptionistOrder.packagingCharge || 0,
+      deliveryCharge: receptionistOrder.deliveryCharge || 0,
+      specialInstructions: receptionistOrder.specialInstructions,
+      source: 'staff',
+      deliveryAddress: receptionistOrder.deliveryAddress,
+      tableNumber: receptionistOrder.tableNumber ? parseInt(receptionistOrder.tableNumber) : null,
+      roomNumber: receptionistOrder.roomNumber ? parseInt(receptionistOrder.roomNumber) : null,
+      createdAt: new Date().toISOString()
+    });
+  };
+
+  // Print Customer Bill without saving order
+  const printStaffBillOnly = () => {
+    if (receptionistOrder.items.length === 0) { showToast('Please select at least one item', 'error'); return; }
+    if (receptionistOrder.orderType === 'delivery' && !receptionistOrder.deliveryAddress) { showToast('Please enter a delivery address', 'error'); return; }
+    if (receptionistOrder.orderType === 'dine-in' && !receptionistOrder.tableNumber) { showToast('Please select a table number', 'error'); return; }
+    const subtotal = receptionistOrder.items.filter(i => !i.complimentary).reduce((s, i) => s + i.price * i.quantity, 0);
+    const extraCharge = receptionistOrder.orderType === 'takeaway' ? (receptionistOrder.packagingCharge || 0) : receptionistOrder.orderType === 'delivery' ? (receptionistOrder.deliveryCharge || 0) : 0;
+    printStaffCustomerBill({
+      _id: `TEMP-${Date.now()}`,
+      customerName: receptionistOrder.customerName || 'Guest Customer',
+      customerPhone: receptionistOrder.customerPhone || '',
+      orderType: receptionistOrder.orderType,
+      items: receptionistOrder.items,
+      totalAmount: subtotal + extraCharge,
+      packagingCharge: receptionistOrder.packagingCharge || 0,
+      deliveryCharge: receptionistOrder.deliveryCharge || 0,
+      specialInstructions: receptionistOrder.specialInstructions,
+      source: 'staff',
+      deliveryAddress: receptionistOrder.deliveryAddress,
+      tableNumber: receptionistOrder.tableNumber ? parseInt(receptionistOrder.tableNumber) : null,
+      createdAt: new Date().toISOString()
+    });
+  };
+
+  const clearReceptionistOrder = async () => {
+    if (receptionistOrder.items.length > 0) {
+      try {
+        const restaurantId = localStorage.getItem('restaurantId');
+
+        if (receptionistOrder.orderType === 'delivery' && !receptionistOrder.deliveryAddress) {
+          setSuccessMessage('⚠️ Please enter delivery address before saving delivery orders.');
+          setTimeout(() => setSuccessMessage(''), 3000);
+          return;
+        }
+        if (receptionistOrder.orderType === 'delivery' && !receptionistOrder.customerName) {
+          setSuccessMessage('⚠️ Please enter customer name for delivery orders.');
+          setTimeout(() => setSuccessMessage(''), 3000);
+          return;
+        }
+        if (receptionistOrder.orderType === 'dine-in' && !receptionistOrder.tableNumber) {
+          setSuccessMessage('⚠️ Please select a table number before saving dine-in orders.');
+          setTimeout(() => setSuccessMessage(''), 3000);
+          return;
+        }
+
+        const subtotal = receptionistOrder.items
+          .filter(i => !i.complimentary)
+          .reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const extraCharge = receptionistOrder.orderType === 'takeaway'
+          ? (receptionistOrder.packagingCharge || 0)
+          : receptionistOrder.orderType === 'delivery'
+          ? (receptionistOrder.deliveryCharge || 0)
+          : 0;
+        const totalAmount = subtotal + extraCharge;
+
+        const orderData = {
+          restaurantId,
+          customerName: receptionistOrder.customerName || 'Guest Customer',
+          customerPhone: receptionistOrder.customerPhone || '',
+          orderType: receptionistOrder.orderType,
+          items: receptionistOrder.items,
+          totalAmount,
+          specialInstructions: receptionistOrder.specialInstructions,
+          source: 'staff',
+          status: 'pending',
+          waiterId: receptionistOrder.waiterId || null,
+          waiterNumber: receptionistOrder.waiterNumber || null,
+          packagingCharge: receptionistOrder.packagingCharge || 0,
+          deliveryCharge: receptionistOrder.deliveryCharge || 0,
+          ...(receptionistOrder.orderType === 'delivery' && { deliveryAddress: receptionistOrder.deliveryAddress }),
+          ...(receptionistOrder.orderType === 'dine-in' && { tableNumber: parseInt(receptionistOrder.tableNumber) }),
+          ...(receptionistOrder.orderType === 'room' && { roomNumber: parseInt(receptionistOrder.roomNumber) })
+        };
+
+        const response = await axios.post('/api/orders', orderData);
+        const createdOrder = response.data;
+
+        trackRestaurantEvent('staff_order_saved', {
+          orderType: receptionistOrder.orderType,
+          itemCount: receptionistOrder.items.length,
+          totalAmount
+        });
+
+        setSuccessMessage(`✅ Order #${createdOrder.orderNumber ? String(createdOrder.orderNumber).padStart(3,'0') : createdOrder._id?.slice(-6).toUpperCase()} saved! Total: ₹${totalAmount}`);
+        setTimeout(() => setSuccessMessage(''), 5000);
+
+        setReceptionistOrder({
+          customerName: '', customerPhone: '', orderType: 'takeaway',
+          deliveryAddress: '', tableNumber: '', roomNumber: '', items: [],
+          specialInstructions: '', waiterId: '', waiterNumber: '',
+          packagingCharge: 0, deliveryCharge: 0,
+        });
+        setSelectedCategory('all');
+        setStaffSearchQuery('');
+        // Always go back to table grid after saving any order
+        setStaffView('tables');
+        setStaffSelectedTable(null);
+        fetchOrders(restaurantId);
+      } catch (error) {
+        console.error('❌ Error saving Staff order:', error);
+        setSuccessMessage(`❌ Failed to save order: ${error.response?.data?.error || error.message}`);
+        setTimeout(() => setSuccessMessage(''), 5000);
+        return;
+      }
+    }
+    setReceptionistOrder({
+      customerName: '', customerPhone: '', orderType: 'takeaway',
+      deliveryAddress: '', tableNumber: '', items: [],
+      specialInstructions: '', waiterId: '', waiterNumber: '',
+      packagingCharge: 0, deliveryCharge: 0,
+    });
+    setSelectedCategory('all');
+    setStaffSearchQuery('');
+  };
+
+  // Cancel an active order — also clears the table session
+  const cancelOrder = async (order) => {
+    setConfirmModal({
+      message: `Cancel order #${order.orderNumber ? String(order.orderNumber).padStart(3,'0') : order._id?.slice(-6)}? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          await axios.patch(`/api/orders/${order._id}/status`, { status: 'cancelled' });
+          if (order.orderType === 'dine-in' && order.tableNumber) {
+            const sessionKey = `table_session_${restaurant._id}_${order.tableNumber}`;
+            localStorage.removeItem(sessionKey);
+          }
+          const restaurantId = localStorage.getItem('restaurantId');
+          await fetchOrders(restaurantId);
+          showToast('Order cancelled');
+        } catch (error) {
+          showToast(`Failed to cancel: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  // Cancel ALL orders on a table/room and go back to grid
+  const cancelAllOrders = (orders) => {
+    const slotText = orders[0]?.orderType === 'room'
+      ? `Room ${orders[0]?.roomNumber}`
+      : `Table ${orders[0]?.tableNumber}`;
+    setConfirmModal({
+      message: `Cancel all ${orders.length} order${orders.length > 1 ? 's' : ''} on ${slotText}? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          await Promise.all(orders.map(o => axios.patch(`/api/orders/${o._id}/status`, { status: 'cancelled' })));
+          // Clear table session
+          if (orders[0]?.orderType === 'dine-in' && orders[0]?.tableNumber) {
+            const sessionKey = `table_session_${restaurant._id}_${orders[0].tableNumber}`;
+            localStorage.removeItem(sessionKey);
+          }
+          const restaurantId = localStorage.getItem('restaurantId');
+          await fetchOrders(restaurantId);
+          // Go back to grid
+          setStaffView('tables');
+          setStaffSelectedTable(null);
+          setReceptionistOrder(prev => ({ ...prev, items: [], tableNumber: '', roomNumber: '', customerName: '', customerPhone: '', specialInstructions: '' }));
+          showToast(`${slotText} orders cancelled`);
+        } catch (error) {
+          showToast(`Failed to cancel: ${error.response?.data?.error || error.message}`, 'error');
+        }
+      }
+    });
+  };
+
+  // Print KOT (Kitchen Order Ticket) for Staff orders
+  const printStaffKOT = (order) => {
+    const settings = getPrinterSettings();
+    const receiptWidth = settings.receiptWidth || '80mm';
+    const slotLabel = order.tableNumber ? 'TABLE ' + order.tableNumber
+      : order.roomNumber ? 'ROOM ' + order.roomNumber
+      : (order.orderType || 'ORDER').toUpperCase();
+    const html = buildKOTHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderId: order._id.slice(-8).toUpperCase(),
+      orderType: order.orderType,
+      customerName: order.customerName,
+      deliveryAddress: order.deliveryAddress,
+      specialInstructions: order.specialInstructions,
+      items: order.items || [],
+      width: receiptWidth,
+    });
+    openPrintWindow(html, 'kitchen', { order, restaurantName: restaurant.name });
+  };
+
+  // Print Customer Bill for Staff orders
+  const printStaffCustomerBill = (order) => {
+    const settings = getPrinterSettings();
+    const receiptWidth = settings.receiptWidth || '80mm';
+    const slotLabel = order.tableNumber ? 'TABLE ' + order.tableNumber
+      : order.roomNumber ? 'ROOM ' + order.roomNumber
+      : order.orderType === 'delivery' ? 'DELIVERY'
+      : order.orderType === 'takeaway' ? 'TAKEAWAY'
+      : null;
+    // Only apply charges appropriate for this order type
+    const pkgCharge = order.orderType === 'takeaway' ? (parseFloat(order.packagingCharge) || 0) : 0;
+    const dlvCharge = order.orderType === 'delivery' ? (parseFloat(order.deliveryCharge) || 0) : 0;
+    const html = buildBillHTML({
+      restaurantName: restaurant.name,
+      slotLabel,
+      orderType: order.orderType,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      deliveryAddress: order.deliveryAddress,
+      items: order.items || [],
+      packagingCharge: pkgCharge,
+      deliveryCharge: dlvCharge,
+      paymentMethod: order.paymentMethod,
+      width: receiptWidth,
+    });
+    openPrintWindow(html, 'bill', { orders: [order], tableLabel: slotLabel, restaurantName: restaurant.name, packagingCharge: pkgCharge, deliveryCharge: dlvCharge });
+  };
+
+  // Edit Order Functions (for completed staff orders only)
+  const openEditOrderModal = (order) => {
+    setEditingOrder({
+      ...order,
+      items: [...order.items]
+    });
+    setShowEditOrderModal(true);
+  };
+
+  const closeEditOrderModal = () => {
+    setEditingOrder(null);
+    setShowEditOrderModal(false);
+    setEditOrderSearchQuery(''); // Reset search query when closing modal
+  };
+
+  const updateEditOrderItem = (itemIndex, field, value) => {
+    setEditingOrder(prev => ({
+      ...prev,
+      items: prev.items.map((item, index) => 
+        index === itemIndex ? { ...item, [field]: value } : item
+      )
+    }));
+  };
+
+  const removeEditOrderItem = (itemIndex) => {
+    setEditingOrder(prev => ({
+      ...prev,
+      items: prev.items.filter((_, index) => index !== itemIndex)
+    }));
+  };
+
+  const addItemToEditOrder = (menuItem) => {
+    setEditingOrder(prev => {
+      const existingItemIndex = prev.items.findIndex(item => item.menuItemId === menuItem._id);
+      
+      if (existingItemIndex >= 0) {
+        // Item exists, increase quantity
+        return {
+          ...prev,
+          items: prev.items.map((item, index) => 
+            index === existingItemIndex 
+              ? { ...item, quantity: item.quantity + 1 }
+              : item
+          )
+        };
+      } else {
+        // New item, add to order
+        return {
+          ...prev,
+          items: [...prev.items, {
+            menuItemId: menuItem._id,
+            name: menuItem.name,
+            price: menuItem.price,
+            quantity: 1
+          }]
+        };
+      }
+    });
+  };
+
+  const saveEditedOrder = async () => {
+    try {
+      if (!editingOrder.items.length) {
+        showToast('Order must have at least one item', 'error');
+        return;
+      }
+
+      const totalAmount = editingOrder.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      
+      const updatedOrderData = {
+        customerName: editingOrder.customerName,
+        customerPhone: editingOrder.customerPhone,
+        orderType: editingOrder.orderType,
+        deliveryAddress: editingOrder.deliveryAddress,
+        tableNumber: editingOrder.tableNumber,
+        items: editingOrder.items,
+        totalAmount,
+        specialInstructions: editingOrder.specialInstructions
+      };
+
+      console.log('🔄 Updating order...', { orderId: editingOrder._id, updatedOrderData });
+
+      const response = await axios.put(`/api/orders/${editingOrder._id}`, updatedOrderData);
+      
+      console.log('✅ Order updated successfully:', response.data);
+      
+      // Refresh orders
+      const restaurantId = localStorage.getItem('restaurantId');
+      await fetchOrders(restaurantId);
+      
+      // Track analytics
+      trackRestaurantEvent('order_edited', {
+        orderId: editingOrder._id,
+        itemCount: editingOrder.items.length,
+        totalAmount,
+        orderSource: editingOrder.source || 'qr'
+      });
+      
+      showToast('Order updated successfully');
+      closeEditOrderModal();
+      
+    } catch (error) {
+      console.error('❌ Error updating order:', error);
+      showToast(`Failed to update order: ${error.response?.data?.error || error.message}`, 'error');
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('restaurantToken');
+    localStorage.removeItem('restaurantId');
+    localStorage.removeItem('restaurantData');
+    navigate('/restaurant-login');
+  };
+
+  if (!restaurant) return <div className="text-center py-12">Loading...</div>;
+
+  const statusColors = {
+    pending: 'bg-amber-50 text-amber-700 border border-amber-200',
+    preparing: 'bg-blue-50 text-blue-700 border border-blue-200',
+    'out-for-delivery': 'bg-purple-50 text-purple-700 border border-purple-200',
+    delivered: 'bg-green-50 text-green-700 border border-green-200',
+    completed: 'bg-gray-50 text-gray-600 border border-gray-200'
+  };
+
+  // Filter orders based on type (ensure orders are valid and not duplicated)
+  const validOrders = orders.filter(order => order && order._id && order.orderType);
+  
+  const deliveryOrders = validOrders.filter(order => 
+    order.orderType === 'delivery' || 
+    (order.source === 'staff' && (order.orderType === 'delivery' || order.orderType === 'takeaway'))
+  );
+  const dineInOrders = validOrders.filter(order => 
+    order.orderType === 'dine-in' || 
+    (order.source === 'staff' && order.orderType === 'dine-in')
+  );
+  const roomOrders = validOrders.filter(order => order.orderType === 'room');
+
+  // Count only active orders for badges (exclude completed and cancelled orders)
+  const activeDeliveryOrders = deliveryOrders.filter(order => order.status !== 'completed' && order.status !== 'cancelled');
+  const activeDineInOrders = dineInOrders.filter(order => order.status !== 'completed' && order.status !== 'cancelled');
+  const activeRoomOrders = roomOrders.filter(order => order.status !== 'completed' && order.status !== 'cancelled');
+  // Unique busy table/room counts for badges
+  // Derived values for Staff Order combined view
+  const staffIsRoom = receptionistOrder.orderType === 'room';
+  const staffExistingOrders = staffSelectedTable
+    ? (staffIsRoom
+        ? activeRoomOrders.filter(o => parseInt(o.roomNumber) === staffSelectedTable)
+        : activeDineInOrders.filter(o => parseInt(o.tableNumber) === staffSelectedTable))
+    : [];
+  const staffExistingTotal = staffExistingOrders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+  const staffSlotLabel = staffIsRoom
+    ? (restaurant?.features?.roomNames?.[staffSelectedTable] || 'Room ' + staffSelectedTable)
+    : staffSelectedTable ? 'Table ' + staffSelectedTable
+    : receptionistOrder.orderType === 'takeaway' ? 'Takeaway' : 'Delivery';
+
+  const activeDineInTableCount = new Set(activeDineInOrders.map(o => o.tableNumber).filter(Boolean)).size;
+  const activeRoomOrderCount = new Set(activeRoomOrders.map(o => o.roomNumber).filter(Boolean)).size;
+
+  return (
+    <div className={'h-screen bg-canvas flex flex-col overflow-hidden'}>
+      {/* Success/Error Toast Banner */}
+      {successMessage && (
+        <div className={`fixed top-0 left-0 right-0 z-50 ${
+          successMessage.startsWith('✅') ? 'bg-green-600' :
+          successMessage.startsWith('⚠️') ? 'bg-amber-500' :
+          'bg-red-600'
+        } text-white px-4 py-2.5 shadow-md`}>
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <span className="text-sm font-medium">{successMessage}</span>
+            <button onClick={() => setSuccessMessage('')} className="no-select text-white/80 hover:text-white shrink-0 text-lg leading-none">×</button>
+          </div>
+        </div>
+      )}
+      
+      <nav className="bg-white border-b border-gray-100 px-3 sm:px-5 py-0 shrink-0" style={{boxShadow:"0 1px 3px 0 rgba(0,0,0,0.06)"}}>
+        <div className="max-w-7xl mx-auto flex items-center gap-2 sm:gap-3 h-14 sm:h-16">
+          {/* Hamburger */}
+          <button onClick={() => setDrawerOpen(true)} className="no-select p-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 text-gray-500 shrink-0 transition-colors" aria-label="Open menu">
+            <Menu size={20} />
+          </button>
+
+          {/* Restaurant name */}
+          <h1 className="text-base sm:text-lg font-bold text-gray-900 truncate flex-1 tracking-tight">{restaurant.name}</h1>
+
+          {/* Top search */}
+          <div className="hidden sm:flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 w-44 lg:w-60 focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-300 transition-all">
+            <Search size={13} className="text-gray-400 shrink-0" />
+            <input value={topSearch} onChange={e => setTopSearch(e.target.value)} placeholder="Search orders…"
+              className="bg-transparent text-sm flex-1 outline-none text-gray-700 placeholder-gray-400" />
+            {topSearch && <button onClick={() => setTopSearch('')} className="shrink-0"><X size={12} className="text-gray-400" /></button>}
+          </div>
+
+          {/* QR shortcut */}
+          <button onClick={() => setActiveTab('qr')} className="no-select p-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 text-gray-500 shrink-0 transition-colors" title="QR Codes">
+            <QrCode size={18} />
+          </button>
+
+          {/* Online / Offline status pill */}
+          <button
+            onClick={toggleStoreOnline}
+            className={`no-select flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-semibold transition-colors shrink-0 ${storeOnline ? 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100' : 'bg-red-50 text-red-600 border border-red-200 hover:bg-red-100'}`}
+          >
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${storeOnline ? 'bg-green-500' : 'bg-red-400'}`} />
+            <span className="hidden sm:inline">{storeOnline ? 'Online' : 'Offline'}</span>
+          </button>
+
+          {/* Logout */}
+          <button onClick={logout} className="no-select p-2 rounded-lg hover:bg-gray-50 active:bg-gray-100 text-gray-400 hover:text-red-500 shrink-0 transition-colors" title="Logout">
+            <LogOut size={18} />
+          </button>
+        </div>
+
+        {/* Offline banner */}
+        {!storeOnline && (
+          <div className="max-w-7xl mx-auto mt-2 bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-center justify-between">
+            <span className="text-sm text-red-700 font-medium">⚠️ Store is Offline — customers cannot place new orders</span>
+            <button onClick={() => setShowOccasionalHours(true)} className="text-xs text-red-600 underline flex items-center gap-1"><Clock size={12} /> Setup occasional timings</button>
+          </div>
+        )}
+      </nav>
+
+      {/* Side Drawer */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
+          <div className="relative w-72 bg-white h-full flex flex-col z-10 drawer-panel shadow-drawer">
+            <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
+              <span className="font-bold text-gray-800 text-base">{restaurant.name}</span>
+              <button onClick={() => setDrawerOpen(false)} className="p-1.5 rounded-lg hover:bg-gray-100"><X size={18} /></button>
+            </div>
+            {/* Drawer search */}
+            <div className="px-4 py-3 border-b border-gray-100">
+              <div className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2">
+                <Search size={14} className="text-gray-400 shrink-0" />
+                <input value={drawerSearch} onChange={e => setDrawerSearch(e.target.value)} placeholder="Search menu…"
+                  autoFocus className="bg-transparent text-sm flex-1 outline-none text-gray-700 placeholder-gray-400" />
+                {drawerSearch && <button onClick={() => setDrawerSearch('')}><X size={13} className="text-gray-400" /></button>}
+              </div>
+            </div>
+            {/* Drawer nav links */}
+            <div className="flex-1 overflow-y-auto py-2">
+              {[
+                { label: 'Profile', icon: User, action: () => { navigate('/restaurant-profile'); setDrawerOpen(false); } },
+                { label: 'Analytics', icon: BarChart3, action: () => { navigate('/analytics'); setDrawerOpen(false); } },
+                { label: 'Printer Settings', icon: Printer, action: () => { navigate('/printer-settings'); setDrawerOpen(false); } },
+                { label: 'Setup Occasional Timings', icon: Clock, action: () => { setShowOccasionalHours(true); setDrawerOpen(false); } },
+                { label: 'QR Codes', icon: QrCode, action: () => { setActiveTab('qr'); setDrawerOpen(false); } },
+              ].filter(item => !drawerSearch || item.label.toLowerCase().includes(drawerSearch.toLowerCase()))
+               .map(item => (
+                <button key={item.label} onClick={item.action}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
+                  <item.icon size={18} className="text-gray-400 shrink-0" />
+                  {item.label}
+                  <ChevronRight size={14} className="text-gray-300 ml-auto" />
+                </button>
+              ))}
+            </div>
+            {/* Store online toggle in drawer */}
+            <div className="border-t border-gray-100 px-4 py-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">Store Status</p>
+                  <p className="text-xs text-gray-400">{storeOnline ? 'Accepting orders' : 'Not accepting orders'}</p>
+                </div>
+                <button
+                  onClick={toggleStoreOnline}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${storeOnline ? 'bg-green-500' : 'bg-red-400'}`}>
+                  <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${storeOnline ? 'left-6' : 'left-0.5'}`} />
+                </button>
+              </div>
+              <button onClick={logout} className="mt-3 w-full flex items-center gap-2 text-sm text-gray-500 hover:text-red-600">
+                <LogOut size={16} /> Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Occasional Hours Modal */}
+      {showOccasionalHours && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <h2 className="font-bold text-gray-800">Setup Occasional Timings</h2>
+              <button onClick={() => setShowOccasionalHours(false)}><X size={18} className="text-gray-400" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+              {occasionalHours.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No special timings set yet</p>}
+              {occasionalHours.map((h, i) => (
+                <div key={i} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">{h.label}</p>
+                    <p className="text-xs text-gray-400">{h.date} · {h.openTime} – {h.closeTime}</p>
+                  </div>
+                  <button onClick={() => { const updated = occasionalHours.filter((_, idx) => idx !== i); saveOccasionalHour(updated); }}
+                    className="p-1.5 text-red-400 hover:text-red-600"><X size={15} /></button>
+                </div>
+              ))}
+              {/* Add new */}
+              <div className="bg-primary/5 rounded-xl p-4 space-y-2 border border-primary/20">
+                <p className="text-xs font-semibold text-primary uppercase tracking-wide">Add Special Day</p>
+                <input placeholder="Label (e.g. Diwali Special)" value={newOccasional.label}
+                  onChange={e => setNewOccasional(p => ({ ...p, label: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input type="date" value={newOccasional.date}
+                  onChange={e => setNewOccasional(p => ({ ...p, date: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+                <div className="flex gap-2">
+                  <input type="time" value={newOccasional.openTime}
+                    onChange={e => setNewOccasional(p => ({ ...p, openTime: e.target.value }))}
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+                  <input type="time" value={newOccasional.closeTime}
+                    onChange={e => setNewOccasional(p => ({ ...p, closeTime: e.target.value }))}
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+                <button
+                  onClick={() => {
+                    if (!newOccasional.label || !newOccasional.date) return;
+                    const updated = [...occasionalHours, newOccasional];
+                    saveOccasionalHour(updated);
+                    setNewOccasional({ label: '', date: '', openTime: '', closeTime: '' });
+                  }}
+                  className="w-full bg-primary text-white py-2 rounded-xl text-sm font-bold hover:opacity-90">
+                  Add Timing
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={'flex-1 min-h-0 flex flex-col overflow-hidden'}>
+        <div className="overflow-x-auto hide-scrollbar shrink-0 border-b border-gray-200 bg-white">
+          <div className="w-full px-3 sm:px-6 flex">
+          {/* Staff Ordering Tab - Moved to first position */}
+          <FeatureGuard feature="staffOrders">
+            <button
+              onClick={() => { setActiveTab('Staff'); setStaffView('tables'); setStaffSelectedTable(null); }}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'Staff' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">Staff Order</span>
+              <span className="sm:hidden">Staff</span>
+            </button>
+          </FeatureGuard>
+
+          <FeatureGuard feature="deliveryOrders">
+            <button
+              onClick={() => setActiveTab('delivery')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'delivery' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">Delivery Orders</span>
+              <span className="sm:hidden">Delivery</span>
+              {activeDeliveryOrders.length > 0 && (
+                <span className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-[5px] rounded-full text-[10px] font-bold leading-none ${activeTab === 'delivery' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                  {activeDeliveryOrders.length}
+                </span>
+              )}
+            </button>
+          </FeatureGuard>
+          <FeatureGuard feature="menuManagement">
+            <button
+              onClick={() => setActiveTab('menu')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'menu' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              Menu
+              {restaurant?.menu?.filter(item => item.available).length > 0 && (
+                <span className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-[5px] rounded-full text-[10px] font-bold leading-none ${activeTab === 'menu' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                  {restaurant.menu.filter(item => item.available).length}
+                </span>
+              )}
+              {restaurant?.features?.menuEnabled === false && (
+                <span className="ml-1 px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-500 text-white">OFF</span>
+              )}
+            </button>
+          </FeatureGuard>
+          <FeatureGuard feature="qrCodeGeneration">
+            <button
+              onClick={() => setActiveTab('qr')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'qr' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">QR Codes</span>
+              <span className="sm:hidden">QR</span>
+              {(restaurant?.tables > 0 || restaurant?.rooms > 0) && (
+                <span className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-[5px] rounded-full text-[10px] font-bold leading-none ${activeTab === 'qr' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                  {(restaurant.tables || 0) + (restaurant.rooms || 0)}
+                </span>
+              )}
+            </button>
+          </FeatureGuard>
+          <FeatureGuard feature="orderHistory">
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'history' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">Order History</span>
+              <span className="sm:hidden">History</span>
+              {validOrders.filter(o => o.status === 'completed').length > 0 && (
+                <span className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-[5px] rounded-full text-[10px] font-bold leading-none ${activeTab === 'history' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                  {validOrders.filter(o => o.status === 'completed').length}
+                </span>
+              )}
+            </button>
+          </FeatureGuard>
+          <FeatureGuard feature="customerFeedback">
+            <button
+              onClick={() => setActiveTab('feedback')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'feedback' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">Feedback</span>
+              <span className="sm:hidden">💬</span>
+              {feedback.length > 0 && (
+                <span className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-[5px] rounded-full text-[10px] font-bold leading-none ${activeTab === 'feedback' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                  {feedback.length}
+                </span>
+              )}
+            </button>
+          </FeatureGuard>
+          
+          <FeatureGuard feature="staffManagement">
+            <button
+              onClick={() => setActiveTab('staff-management')}
+              className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'staff-management' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+            >
+              <span className="hidden sm:inline">Staff</span>
+              <span className="sm:hidden">Staff</span>
+            </button>
+          </FeatureGuard>
+          
+          <button
+            onClick={() => setActiveTab('discounts')}
+            className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'discounts' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+          >
+            <span className="hidden sm:inline">Discounts</span>
+            <span className="sm:hidden">Discounts</span>
+          </button>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'delivery' && isFeatureEnabled('deliveryOrders') && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto" style={{height:'100%'}}>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-3">
+              <h2 className="text-sm font-semibold text-text-primary">Delivery & Takeaway <span className="text-gray-400 font-normal">({activeDeliveryOrders.length} active)</span></h2>
+            </div>
+            {activeDeliveryOrders.filter(o => orderWorkflowTab === 'all' || o.status === orderWorkflowTab).length === 0 && (
+              <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl text-center">
+                <span className="text-5xl mb-4">🛵</span>
+                <p className="text-gray-500 font-semibold text-base">No {orderWorkflowTab === 'all' ? 'active' : orderWorkflowTab} orders</p>
+                <p className="text-xs text-gray-400 mt-1">Orders will appear here when placed</p>
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-start">
+              {activeDeliveryOrders.filter(o => orderWorkflowTab === 'all' || o.status === orderWorkflowTab).map((order) => (
+                <div key={order._id} className="bg-white rounded-card shadow-card border border-border overflow-hidden">
+                  {/* Compact header row */}
+                  <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-50">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-800">
+                          {order.orderType === 'takeaway' ? '🥡' : '🛵'} {order.customerName || 'Guest'}
+                        </span>
+                        {order.waiterNumber && <span className="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{order.waiterNumber}</span>}
+                        <span className="text-xs text-gray-400">#{order.orderNumber ? String(order.orderNumber).padStart(3,'0') : order._id?.slice(-4)}</span>
+                      </div>
+                      {order.deliveryAddress && <p className="text-xs text-gray-400 truncate">{order.deliveryAddress}</p>}
+                    </div>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold shrink-0 ${statusColors[order.status]}`}>{order.status}</span>
+                    <span className="text-sm font-bold text-primary shrink-0">₹{order.totalAmount}</span>
+                  </div>
+                  {/* Items — collapsed by default */}
+                  <div className="px-4 py-2 text-xs text-gray-600 flex flex-wrap gap-2">
+                    {order.items.map((item, i) => (
+                      <span key={i} className="bg-gray-50 px-2 py-0.5 rounded">{item.name} ×{item.quantity}</span>
+                    ))}
+                  </div>
+                  {/* Action buttons — compact single row */}
+                  <div className="px-3 pb-2.5 flex gap-1.5 flex-wrap">
+                    {order.source === 'staff' ? (
+                      <>
+                        <button onClick={() => printStaffKOT(order)} className="bg-orange-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-orange-600">KOT</button>
+                        <button onClick={() => printStaffCustomerBill(order)} className="bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-blue-600">Bill</button>
+                        <button onClick={() => clearIndividualOrder(order)} className="bg-purple-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-purple-600">Clear</button>
+                        <button onClick={() => openEditOrderModal(order)} className="bg-green-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-green-600">Edit</button>
+                        {order.status !== 'completed' && order.status !== 'cancelled' && (
+                          <button onClick={() => cancelOrder(order)} className="bg-red-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-red-600">Cancel</button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => { const html = printIndividualReceiptHTML(order); const slotLabel = order.orderType === 'delivery' ? 'DELIVERY' : order.orderType === 'takeaway' ? 'TAKEAWAY' : order.tableNumber ? 'TABLE '+order.tableNumber : null; const pkgCharge = order.orderType === 'takeaway' ? (parseFloat(order.packagingCharge)||0) : 0; const dlvCharge = order.orderType === 'delivery' ? (parseFloat(order.deliveryCharge)||0) : 0; smartPrint(html, 'bill', { orders: [order], tableLabel: slotLabel, total: order.totalAmount, restaurantName: restaurant.name, packagingCharge: pkgCharge, deliveryCharge: dlvCharge }); }} className="bg-gray-700 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-gray-800">⚡</button>
+                        <button onClick={() => printIndividualReceipt(order)} className="bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-blue-600">Print</button>
+                        <button onClick={() => openEditOrderModal(order)} className="bg-green-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-green-600">Edit</button>
+                        {order.status !== 'completed' && order.status !== 'cancelled' && (
+                          <button onClick={() => cancelOrder(order)} className="bg-red-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-red-600">Cancel</button>
+                        )}
+                      </>
+                    )}
+                    {/* Status progression */}
+                    {order.status === 'pending' && <button onClick={() => updateOrderStatus(order._id,'preparing')} className="ml-auto bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-bold">Preparing</button>}
+                    {order.status === 'preparing' && <button onClick={() => updateOrderStatus(order._id,'out-for-delivery')} className="ml-auto bg-indigo-600 text-white px-3 py-1.5 rounded text-xs font-bold">Out for Delivery</button>}
+                    {order.status === 'out-for-delivery' && <button onClick={() => updateOrderStatus(order._id,'delivered')} className="ml-auto bg-green-600 text-white px-3 py-1.5 rounded text-xs font-bold">Delivered</button>}
+                    {order.status === 'delivered' && <button onClick={() => updateOrderStatus(order._id,'completed')} className="ml-auto bg-gray-600 text-white px-3 py-1.5 rounded text-xs font-bold">Complete</button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'dine-in' && (
+          <FloorPlanView
+            restaurant={restaurant}
+            activeDineInOrders={activeDineInOrders}
+            printStaffKOT={printStaffKOT}
+            printStaffCustomerBill={printStaffCustomerBill}
+            printKitchenOrder={printKitchenOrder}
+            printReceipt={printReceipt}
+            clearTableAndSaveToHistory={clearTableAndSaveToHistory}
+            openEditOrderModal={openEditOrderModal}
+            cancelOrder={cancelOrder}
+          />
+        )}
+
+        {activeTab === 'rooms' && (
+          <RoomFloorPlanView
+            restaurant={restaurant}
+            activeRoomOrders={activeRoomOrders}
+            printKitchenOrder={printKitchenOrder}
+            printReceipt={printReceipt}
+            clearRoomAndSaveToHistory={clearRoomAndSaveToHistory}
+            openEditOrderModal={openEditOrderModal}
+            onGoToQR={() => setActiveTab('qr')}
+            cancelOrder={cancelOrder}
+          />
+        )}
+
+        {activeTab === 'menu' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto">
+            {/* Sub-tab toggle: Items / Visibility */}
+            <div className="flex gap-2 mb-4">
+              <button onClick={() => setMenuSubTab('items')}
+                className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${menuSubTab === 'items' ? 'bg-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
+                Items
+              </button>
+              <button onClick={() => setMenuSubTab('visibility')}
+                className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5 ${menuSubTab === 'visibility' ? 'bg-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
+                Visibility
+                {restaurant?.features?.menuEnabled === false && (
+                  <span className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-500 text-white">OFF</span>
+                )}
+              </button>
+            </div>
+
+            {/* Visibility sub-tab */}
+            {menuSubTab === 'visibility' && (
+              <div className="max-w-2xl">
+                <div className="bg-white rounded-xl shadow-sm p-6 mb-4">
+                  <h2 className="text-lg font-bold text-gray-800 mb-1">Menu Visibility</h2>
+                  <p className="text-sm text-gray-500 mb-4">Control what customers see in real time.</p>
+
+                  <div className={`p-4 rounded-xl border-2 mb-3 ${restaurant?.features?.menuEnabled === false ? 'border-red-200 bg-red-50' : 'border-green-200 bg-green-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-gray-800">Entire Menu</p>
+                        <p className="text-xs text-gray-500">
+                          {restaurant?.features?.menuEnabled === false ? 'Hidden from customers' : 'Visible to customers'}
+                        </p>
+                      </div>
+                      <button onClick={() => saveMenuVisibility({ ...restaurant.features, menuEnabled: restaurant?.features?.menuEnabled !== false ? false : true })}
+                        className={`relative w-14 h-7 rounded-full transition-colors shrink-0 ${restaurant?.features?.menuEnabled === false ? 'bg-red-400' : 'bg-green-500'}`}>
+                        <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${restaurant?.features?.menuEnabled === false ? 'left-0.5' : 'left-7'}`} />
+                      </button>
+                    </div>
+                    {restaurant?.features?.menuEnabled === false && (
+                      <div className="mt-3">
+                        <label className="text-xs font-medium text-red-700 block mb-1">Message shown to customers</label>
+                        <div className="flex gap-2">
+                          <input id="menuOffMessageInput" type="text" defaultValue={restaurant?.features?.menuOffMessage || ''}
+                            placeholder="e.g. We are closed right now. Please visit us tomorrow!"
+                            className="flex-1 text-sm border border-red-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-400 bg-white" />
+                          <button onClick={() => { const val = document.getElementById('menuOffMessageInput')?.value || ''; saveMenuVisibility({ ...restaurant.features, menuOffMessage: val }); }}
+                            className="px-3 py-2 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 whitespace-nowrap">Save</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-sm font-semibold text-gray-700 mb-3 mt-4">Category & Item Visibility</p>
+                  <div className="space-y-0">
+                    {[...new Set((restaurant?.menu || []).map(i => i.category).filter(Boolean))].map(cat => {
+                      const hidden = (restaurant?.features?.hiddenCategories || []).includes(cat);
+                      const menuOff = restaurant?.features?.menuEnabled === false;
+                      const catMessages = restaurant?.features?.categoryMessages || {};
+                      const catItems = (restaurant?.menu || []).filter(i => i.category === cat);
+                      const visibleCount = catItems.filter(i => i.available).length;
+                      return (
+                        <CategoryAccordion key={cat} cat={cat} hidden={hidden} menuOff={menuOff}
+                          catMessages={catMessages} catItems={catItems} visibleCount={visibleCount}
+                          onToggleCategory={() => {
+                            const current = restaurant?.features?.hiddenCategories || [];
+                            const updated = hidden ? current.filter(c => c !== cat) : [...current, cat];
+                            saveMenuVisibility({ ...restaurant.features, hiddenCategories: updated });
+                          }}
+                          onSaveCatMessage={val => {
+                            const updated = { ...(restaurant?.features?.categoryMessages || {}), [cat]: val };
+                            saveMenuVisibility({ ...restaurant.features, categoryMessages: updated });
+                          }}
+                          onToggleItem={async (item) => {
+                            const restaurantId = localStorage.getItem('restaurantId');
+                            const newAvail = !item.available;
+                            setRestaurant(prev => ({ ...prev, menu: prev.menu.map(m => m._id === item._id ? { ...m, available: newAvail } : m) }));
+                            try {
+                              const res = await axios.put(`/api/restaurants/${restaurantId}/menu/${item._id}`, { available: newAvail });
+                              if (res.data?.menu) setRestaurant(res.data);
+                            } catch(e) { fetchRestaurant(restaurantId); showToast('Failed to update item', 'error'); }
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Items sub-tab */}
+            {menuSubTab === 'items' && (
+            <div>
+            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between mb-4 sm:mb-6">
+              <div className="flex gap-2">
+                <FeatureGuard feature="menuManagement">
+                  <button
+                    onClick={() => setShowMenuForm(true)}
+                    className="bg-primary text-white px-4 sm:px-6 py-2 sm:py-3 rounded-lg hover:bg-red-600 flex items-center gap-2 text-sm sm:text-base"
+                  >
+                    <Plus size={18} />
+                    Add Menu Item
+                  </button>
+                </FeatureGuard>
+                <FeatureGuard feature="menuManagement">
+                  <label className={`px-4 py-2 sm:py-3 rounded-lg text-sm font-medium flex items-center gap-2 border transition-colors cursor-pointer ${importingMenu ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white text-green-600 border-green-400 hover:bg-green-50'}`}>
+                    <Upload size={16} />
+                    {importingMenu
+                      ? `Importing ${importProgress.current}/${importProgress.total}...`
+                      : 'Import Menu'}
+                    <input type="file" accept=".json" className="hidden" onChange={handleImportMenu} disabled={importingMenu} />
+                  </label>
+                  {importingMenu && importProgress.total > 0 && (
+                    <div className="w-full mt-2">
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-green-500 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }}
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1 text-center">
+                        {Math.round((importProgress.current / importProgress.total) * 100)}% — {importProgress.current} of {importProgress.total} items
+                      </p>
+                    </div>
+                  )}
+                </FeatureGuard>
+                <button
+                  onClick={async () => {
+                    if (!arrangeMode) {
+                      const cats = [...new Set(restaurant.menu.map(i => i.category).filter(Boolean))];
+                      setOrderedCategories(cats);
+                      setOrderedMenu([...restaurant.menu]);
+                      setArrangeMode(true);
+                    } else {
+                      await saveArrangeOrder();
+                      setArrangeMode(false);
+                    }
+                  }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 border transition-colors ${
+                    arrangeMode
+                      ? 'bg-green-500 text-white border-green-500 hover:bg-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <GripVertical size={16} />
+                  {arrangeMode ? 'Save Order' : 'Arrange'}
+                </button>
+                {arrangeMode && (
+                  <button
+                    onClick={() => setArrangeMode(false)}
+                    className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 border border-gray-300 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              {/* Search Input */}
+              {!arrangeMode && (
+                <div className="w-full sm:w-auto sm:max-w-md flex-1 sm:flex-initial">
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <Search className="h-4 w-4 text-gray-400" />
+                    </div>
+                    <input
+                      ref={menuSearchInputRef}
+                      type="text"
+                      placeholder="Search menu items... (Press / to focus)"
+                      value={menuSearchQuery}
+                      onChange={(e) => setMenuSearchQuery(e.target.value)}
+                      className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      onKeyDown={(e) => { if (e.key === 'Escape') setMenuSearchQuery(''); }}
+                    />
+                    {menuSearchQuery && (
+                      <button onClick={() => setMenuSearchQuery('')} className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                        <X className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Search Results Count */}
+            {menuSearchQuery && !arrangeMode && (
+              <div className="mb-4 text-sm text-gray-600">
+                {restaurant.menu.filter(item =>
+                  item.name.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                  item.category?.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                  item.description?.toLowerCase().includes(menuSearchQuery.toLowerCase())
+                ).length} items found for "{menuSearchQuery}"
+                <span className="ml-2 text-gray-400">• Press Escape to clear</span>
+              </div>
+            )}
+
+            {/* ARRANGE MODE */}
+            {arrangeMode ? (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-500">Use arrows or drag to reorder categories and items.</p>
+                {orderedCategories.map((category, catIndex) => (
+                  <div
+                    key={category}
+                    draggable
+                    onDragStart={() => { dragItem.current = catIndex; dragType.current = 'category'; }}
+                    onDragEnter={() => { dragOverItem.current = catIndex; }}
+                    onDragEnd={() => {
+                      if (dragType.current !== 'category') return;
+                      const cats = [...orderedCategories];
+                      const [moved] = cats.splice(dragItem.current, 1);
+                      cats.splice(dragOverItem.current, 0, moved);
+                      setOrderedCategories(cats);
+                      dragItem.current = null;
+                      dragOverItem.current = null;
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    className="bg-white rounded-xl border-2 border-dashed border-gray-200 hover:border-primary transition-colors"
+                  >
+                    {/* Category header */}
+                    <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100">
+                      <GripVertical size={18} className="text-gray-400 shrink-0 cursor-grab" />
+                      <span className="font-bold text-gray-800 flex-1">{category}</span>
+                      <span className="text-sm text-gray-400 mr-2">({orderedMenu.filter(i => i.category === category).length})</span>
+                      {/* Category arrow buttons */}
+                      <div className="flex flex-col gap-0.5">
+                        <button
+                          disabled={catIndex === 0}
+                          onClick={() => {
+                            const cats = [...orderedCategories];
+                            [cats[catIndex - 1], cats[catIndex]] = [cats[catIndex], cats[catIndex - 1]];
+                            setOrderedCategories(cats);
+                          }}
+                          className="w-6 h-6 flex items-center justify-center rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-30 text-gray-600 text-xs leading-none"
+                        >▲</button>
+                        <button
+                          disabled={catIndex === orderedCategories.length - 1}
+                          onClick={() => {
+                            const cats = [...orderedCategories];
+                            [cats[catIndex + 1], cats[catIndex]] = [cats[catIndex], cats[catIndex + 1]];
+                            setOrderedCategories(cats);
+                          }}
+                          className="w-6 h-6 flex items-center justify-center rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-30 text-gray-600 text-xs leading-none"
+                        >▼</button>
+                      </div>
+                    </div>
+
+                    {/* Items within category */}
+                    <div className="p-3 space-y-2">
+                      {orderedMenu.filter(i => i.category === category).map((item, itemIndex) => {
+                        const globalIndex = orderedMenu.findIndex(i => i._id === item._id);
+                        const categoryItems = orderedMenu.filter(i => i.category === category);
+                        return (
+                          <div
+                            key={item._id}
+                            draggable
+                            onDragStart={(e) => {
+                              e.stopPropagation();
+                              dragItem.current = globalIndex;
+                              dragType.current = 'item';
+                              dragItemCategory.current = category;
+                            }}
+                            onDragEnter={(e) => {
+                              e.stopPropagation();
+                              dragOverItem.current = globalIndex;
+                            }}
+                            onDragEnd={(e) => {
+                              e.stopPropagation();
+                              if (dragType.current !== 'item') return;
+                              if (dragItemCategory.current !== category) return;
+                              const menu = [...orderedMenu];
+                              const [moved] = menu.splice(dragItem.current, 1);
+                              menu.splice(dragOverItem.current, 0, moved);
+                              setOrderedMenu(menu);
+                              dragItem.current = null;
+                              dragOverItem.current = null;
+                            }}
+                            onDragOver={(e) => e.preventDefault()}
+                            className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2 hover:bg-gray-100 transition-colors"
+                          >
+                            <GripVertical size={16} className="text-gray-400 shrink-0 cursor-grab" />
+                            {item.image && (
+                              <img src={item.image} alt={item.name} className="w-10 h-10 rounded object-cover shrink-0"
+                                onError={(e) => { e.target.style.display = 'none'; }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-gray-800 text-sm truncate">{item.name}</p>
+                              <p className="text-xs text-gray-500">₹{item.price} · {item.isVeg ? 'Veg' : 'Non-Veg'}</p>
+                            </div>
+                            {/* Item arrow buttons */}
+                            <div className="flex flex-col gap-0.5 shrink-0">
+                              <button
+                                disabled={itemIndex === 0}
+                                onClick={() => {
+                                  const menu = [...orderedMenu];
+                                  const prevGlobal = orderedMenu.findIndex(i => i._id === categoryItems[itemIndex - 1]._id);
+                                  [menu[prevGlobal], menu[globalIndex]] = [menu[globalIndex], menu[prevGlobal]];
+                                  setOrderedMenu(menu);
+                                }}
+                                className="w-6 h-6 flex items-center justify-center rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-30 text-gray-600 text-xs leading-none"
+                              >▲</button>
+                              <button
+                                disabled={itemIndex === categoryItems.length - 1}
+                                onClick={() => {
+                                  const menu = [...orderedMenu];
+                                  const nextGlobal = orderedMenu.findIndex(i => i._id === categoryItems[itemIndex + 1]._id);
+                                  [menu[nextGlobal], menu[globalIndex]] = [menu[globalIndex], menu[nextGlobal]];
+                                  setOrderedMenu(menu);
+                                }}
+                                className="w-6 h-6 flex items-center justify-center rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-30 text-gray-600 text-xs leading-none"
+                              >▼</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              /* NORMAL VIEW */
+              <>
+                <div className="space-y-8">
+                  {(() => {
+                    const filtered = restaurant.menu.filter(item =>
+                      !menuSearchQuery ||
+                      item.name.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                      item.category?.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                      item.description?.toLowerCase().includes(menuSearchQuery.toLowerCase())
+                    );
+                    const categories = [...new Set(filtered.map(item => item.category).filter(Boolean))];
+                    return categories.map(category => (
+                      <div key={category}>
+                        <h3 className="text-lg font-bold text-gray-800 mb-3 pb-2 border-b border-gray-200 flex items-center gap-2">
+                          <span>{category}</span>
+                          <span className="text-sm font-normal text-gray-400">({filtered.filter(i => i.category === category).length})</span>
+                        </h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                          {filtered.filter(item => item.category === category).map((item) => (
+                            <div key={item._id} className={`bg-white rounded-lg shadow-md overflow-hidden ${!item.available ? 'opacity-60 border-2 border-red-200' : ''}`}>
+                              {!item.available && (
+                                <div className="bg-red-500 text-white text-xs px-2 py-1 text-center">UNAVAILABLE - Removed from menu</div>
+                              )}
+                              {item.image && (
+                                <div className="h-32 bg-gray-100">
+                                  <img src={item.image} alt={item.name}
+                                    className={`w-full h-full object-cover ${!item.available ? 'grayscale' : ''}`}
+                                    onError={(e) => { e.target.style.display = 'none'; }} />
+                                </div>
+                              )}
+                              <div className="p-4">
+                                <div className="flex justify-between items-start mb-2">
+                                  <h3 className={`font-bold ${!item.available ? 'text-gray-500 line-through' : 'text-gray-800'}`}>
+                                    {menuSearchQuery ? (
+                                      <span dangerouslySetInnerHTML={{ __html: item.name.replace(new RegExp(`(${menuSearchQuery})`, 'gi'), '<mark class="bg-yellow-200 px-1 rounded">$1</mark>') }} />
+                                    ) : item.name}
+                                  </h3>
+                                  <div className="flex gap-2">
+                                    <FeatureGuard feature="menuManagement">
+                                      <button onClick={() => { setEditingItem(item); setMenuForm(item); setShowMenuForm(true); }} className="text-blue-500 hover:text-blue-700" title="Edit item">
+                                        <Edit size={18} />
+                                      </button>
+                                    </FeatureGuard>
+                                    <FeatureGuard feature="menuManagement">
+                                      <button onClick={() => deleteMenuItem(item._id)} className="text-red-500 hover:text-red-700" title="Delete item">
+                                        <Trash2 size={18} />
+                                      </button>
+                                    </FeatureGuard>
+                                  </div>
+                                </div>
+                                <p className={`text-sm mb-2 ${!item.available ? 'text-gray-400' : 'text-gray-600'}`}>{item.description}</p>
+                                <div className="flex justify-between items-center">
+                                  <span className={`text-lg font-bold ${!item.available ? 'text-gray-400 line-through' : 'text-primary'}`}>₹{item.price}</span>
+                                  <div>
+                                    {item.isVeg ? (
+                                      <span className={`text-sm ${!item.available ? 'text-gray-400' : 'text-green-600'}`}>Veg</span>
+                                    ) : (
+                                      <span className={`text-sm ${!item.available ? 'text-gray-400' : 'text-red-600'}`}>Non-Veg</span>
+                                    )}
+                                  </div>
+                                </div>
+                                {!item.available && <div className="mt-1 text-xs text-red-500 font-medium text-right">In Order History</div>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+
+                {menuSearchQuery && restaurant.menu.filter(item =>
+                  item.name.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                  item.category?.toLowerCase().includes(menuSearchQuery.toLowerCase()) ||
+                  item.description?.toLowerCase().includes(menuSearchQuery.toLowerCase())
+                ).length === 0 && (
+                  <div className="text-center py-12 text-gray-500">
+                    <div className="text-4xl mb-4"></div>
+                    <div className="text-lg font-medium">No menu items found</div>
+                    <div className="text-sm mt-2">Try searching with different keywords or check your spelling</div>
+                    <button onClick={() => setMenuSearchQuery('')} className="mt-4 text-primary hover:text-red-600 font-medium">Clear search</button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {showMenuForm && (              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg p-4 sm:p-6 md:p-8 max-w-md w-full max-h-[90vh] overflow-y-auto">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4 sm:mb-6">
+                    {editingItem ? 'Edit Menu Item' : 'Add Menu Item'}
+                  </h2>
+                  <form onSubmit={handleMenuSubmit} className="space-y-4">
+                    <div>
+                      <label className="block text-gray-700 mb-2">Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={menuForm.name}
+                        onChange={(e) => setMenuForm({...menuForm, name: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-700 mb-2">Price</label>
+                      <input
+                        type="number"
+                        required
+                        value={menuForm.price}
+                        onChange={(e) => setMenuForm({...menuForm, price: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-700 mb-2">Category</label>
+                      {!showNewCategoryInput ? (
+                        <div className="flex gap-2">
+                          <select
+                            required
+                            value={menuForm.category}
+                            onChange={(e) => {
+                              if (e.target.value === '__new__') {
+                                setShowNewCategoryInput(true);
+                                setNewCategoryValue('');
+                              } else {
+                                setMenuForm({...menuForm, category: e.target.value});
+                              }
+                            }}
+                            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-white"
+                          >
+                            <option value="">Select a category</option>
+                            {[...new Set([
+                              ...(restaurant?.menu || []).map(i => i.category).filter(Boolean),
+                              ...(menuForm.category && menuForm.category !== '__new__' ? [menuForm.category] : [])
+                            ])].map(cat => (
+                              <option key={cat} value={cat}>{cat}</option>
+                            ))}
+                            <option value="__new__">+ Add new category</option>
+                          </select>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            autoFocus
+                            value={newCategoryValue}
+                            onChange={e => setNewCategoryValue(e.target.value)}
+                            placeholder="New category name"
+                            className="flex-1 px-4 py-2 border border-primary rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (newCategoryValue.trim()) {
+                                setMenuForm({...menuForm, category: newCategoryValue.trim()});
+                                setShowNewCategoryInput(false);
+                              }
+                            }}
+                            className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-semibold hover:bg-primary/90"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowNewCategoryInput(false); setNewCategoryValue(''); }}
+                            className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                      {menuForm.category && !showNewCategoryInput && (
+                        <p className="text-xs text-gray-500 mt-1">Selected: <span className="font-semibold text-primary">{menuForm.category}</span></p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-gray-700 mb-2">Description</label>
+                      <textarea
+                        value={menuForm.description}
+                        onChange={(e) => setMenuForm({...menuForm, description: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                        rows="3"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-700 mb-3 font-semibold">Image</label>
+                      
+                      {/* Upload Method Selection */}
+                      <div className="flex gap-4 mb-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            value="url"
+                            checked={imageUploadMethod === 'url'}
+                            onChange={(e) => setImageUploadMethod(e.target.value)}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-gray-700">Image URL</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            value="upload"
+                            checked={imageUploadMethod === 'upload'}
+                            onChange={(e) => setImageUploadMethod(e.target.value)}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-gray-700">Upload File</span>
+                        </label>
+                      </div>
+
+                      {/* Image URL Input */}
+                      {imageUploadMethod === 'url' && (
+                        <div>
+                          <input
+                            type="url"
+                            value={menuForm.image}
+                            onChange={(e) => setMenuForm({...menuForm, image: e.target.value})}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                            placeholder="https://example.com/image.jpg"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            Direct link to image file (jpg, png, etc.)
+                          </p>
+                        </div>
+                      )}
+
+                      {/* File Upload */}
+                      {imageUploadMethod === 'upload' && (
+                        <div>
+                          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary transition-colors">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleImageFileChange}
+                              className="hidden"
+                              id="image-upload"
+                            />
+                            <label htmlFor="image-upload" className="cursor-pointer">
+                              {imageFile ? (
+                                <div>
+                                  <p className="text-green-600 font-semibold mb-1">✓ {imageFile.name}</p>
+                                  <p className="text-xs text-gray-500">
+                                    {(imageFile.size / (1024 * 1024)).toFixed(2)} MB
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setImageFile(null);
+                                      setMenuForm({...menuForm, image: ''});
+                                    }}
+                                    className="text-xs text-red-500 hover:underline mt-2"
+                                  >
+                                    Remove file
+                                  </button>
+                                </div>
+                              ) : (
+                                <div>
+                                  <p className="text-gray-600 font-semibold mb-1">Click to upload image</p>
+                                  <p className="text-xs text-gray-500">
+                                    JPG, PNG up to 2MB
+                                  </p>
+                                </div>
+                              )}
+                            </label>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Image Preview */}
+                      {menuForm.image && (
+                        <div className="mt-3">
+                          <label className="block text-gray-700 mb-2">Preview</label>
+                          <div className="bg-gray-100 rounded-lg overflow-hidden max-w-[200px]">
+                            <img 
+                              src={menuForm.image} 
+                              alt="Preview" 
+                              className="w-full h-32 object-cover"
+                              onError={(e) => {
+                                e.target.style.display = 'none';
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-gray-700 mb-2">Type</label>
+                      <div className="flex gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={menuForm.isVeg}
+                            onChange={() => setMenuForm({...menuForm, isVeg: true})}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-green-600">Vegetarian</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            checked={!menuForm.isVeg}
+                            onChange={() => setMenuForm({...menuForm, isVeg: false})}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-red-600">Non-Vegetarian</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 pt-4">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMenuForm(false);
+                          setEditingItem(null);
+                          setMenuForm({ name: '', price: '', category: '', description: '', isVeg: true, image: '' });
+                          setImageFile(null);
+                        }}
+                        className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 px-4 py-2 bg-primary text-white rounded-lg hover:bg-red-600"
+                      >
+                        {editingItem ? 'Update Item' : 'Add Item'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+            </div>
+          )} {/* end menuSubTab === 'items' */}
+          </div>
+        )}
+
+        {activeTab === 'qr' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 sm:p-4 mb-4 sm:mb-6">
+              <p className="text-sm text-blue-800 mb-2">
+                <strong>📱 Scan to Order:</strong> Customers can scan these QR codes to order directly from their table without waiting for a waiter.
+              </p>
+              <p className="text-xs text-blue-700">
+                💡 Print these QR codes and place them on each table. You can right-click and save each QR code image.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between mb-4 sm:mb-6 flex-wrap gap-2">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-800">
+                Table QR Codes ({restaurant.tables || 0} tables)
+              </h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    console.log('Current restaurant:', restaurant);
+                    console.log('Restaurant ID:', localStorage.getItem('restaurantId'));
+                    console.log('Current tables:', restaurant.tables);
+                    showToast(`ID: ${localStorage.getItem('restaurantId')} | Tables: ${restaurant.tables}`);
+                  }}
+                  className="bg-blue-500 text-white px-3 py-2 rounded-lg hover:bg-blue-600 text-sm"
+                  title="Debug Info"
+                >
+                  🐛 Debug
+                </button>
+                <FeatureGuard feature="tableManagement">
+                  <button
+                    onClick={addTable}
+                    className="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 flex items-center gap-2 text-sm sm:text-base"
+                  >
+                    <Plus size={18} />
+                    Add Table
+                  </button>
+                </FeatureGuard>
+              </div>
+            </div>
+            {restaurant.tables === 0 ? (
+              <div className="text-center py-12 bg-white rounded-lg shadow-md">
+                <p className="text-gray-500 mb-4">No tables added yet</p>
+                <button
+                  onClick={addTable}
+                  className="bg-primary text-white px-6 py-3 rounded-lg hover:bg-red-600"
+                >
+                  Add Your First Table
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+                {Array.from({ length: restaurant.tables || 0 }, (_, i) => i + 1).map((tableNum) => {
+                  // Force production domain for QR codes
+                  const qrUrl = `https://waitnot-restaurant.onrender.com/qr/${restaurant._id}/${tableNum}`;
+                  return (
+                    <div key={tableNum} className="bg-white rounded-lg shadow-md p-4 text-center relative">
+                      {/* Delete Button */}
+                      {tableNum === restaurant.tables && (
+                        <FeatureGuard feature="tableManagement">
+                          <button
+                            onClick={() => deleteTable(tableNum)}
+                            className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full hover:bg-red-600"
+                            title="Delete this table"
+                          >
+                            <X size={16} />
+                          </button>
+                        </FeatureGuard>
+                      )}
+                      
+                      <div id={`qr-table-${tableNum}`} className="bg-white p-3 rounded-lg mb-3 inline-block border-2 border-gray-200">
+                        <img
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}&margin=10`}
+                          alt={`QR Code for Table ${tableNum}`}
+                          className="w-[150px] h-[150px]"
+                          crossOrigin="anonymous"
+                        />
+                      </div>
+                      <p className="font-bold text-gray-800 text-lg mb-2">Table {tableNum}</p>
+                      <p className="text-xs text-gray-500 mb-2">Scan to order</p>
+                      <a
+                        href={qrUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-500 hover:underline block mb-2"
+                      >
+                        Test Link
+                      </a>
+                      <FeatureGuard feature="qrCodeGeneration">
+                        <button
+                          onClick={() => downloadQRCode(tableNum, qrUrl)}
+                          className="text-sm bg-primary text-white px-4 py-2 rounded-lg hover:bg-red-600 w-full"
+                        >
+                          📥 Download QR
+                        </button>
+                      </FeatureGuard>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ── Assign Rooms Section ── */}
+            <div className="mt-10">
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 sm:p-4 mb-4 sm:mb-6">
+                <p className="text-sm text-purple-800 mb-1">
+                  <strong>🏨 Room QR Codes:</strong> Assign QR codes to hotel/guest rooms so customers can order directly from their room.
+                </p>
+                <p className="text-xs text-purple-700">
+                  💡 Print these QR codes and place them in each room. Scanning opens the same menu with a Room order type.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between mb-4 sm:mb-6 flex-wrap gap-2">
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-800">
+                  Assign Rooms ({restaurant.rooms || 0} rooms)
+                </h2>
+                <FeatureGuard feature="tableManagement">
+                  <button
+                    onClick={addRoom}
+                    className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2 text-sm sm:text-base"
+                  >
+                    <Plus size={18} />
+                    Add Room
+                  </button>
+                </FeatureGuard>
+              </div>
+
+              {(!restaurant.rooms || restaurant.rooms === 0) ? (
+                <div className="text-center py-12 bg-white rounded-lg shadow-md">
+                  <div className="text-4xl mb-3">🏨</div>
+                  <p className="text-gray-500 mb-4">No rooms added yet</p>
+                  <button
+                    onClick={addRoom}
+                    className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700"
+                  >
+                    Add Your First Room
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+                  {Array.from({ length: restaurant.rooms || 0 }, (_, i) => i + 1).map((roomNum) => {
+                    const qrUrl = `https://waitnot-restaurant.onrender.com/qr-room/${restaurant._id}/${roomNum}`;
+                    const roomName = restaurant.features?.roomNames?.[roomNum] || `Room ${roomNum}`;
+                    const isEditingThis = editingRoomName?.roomNum === roomNum;
+                    return (
+                      <div key={roomNum} className="bg-white rounded-lg shadow-md p-4 text-center relative border-t-4 border-purple-400">
+                        {roomNum === restaurant.rooms && (
+                          <FeatureGuard feature="tableManagement">
+                            <button
+                              onClick={() => deleteRoom(roomNum)}
+                              className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full hover:bg-red-600"
+                              title="Delete this room"
+                            >
+                              <X size={16} />
+                            </button>
+                          </FeatureGuard>
+                        )}
+                        <div id={`qr-room-${roomNum}`} className="bg-white p-3 rounded-lg mb-3 inline-block border-2 border-purple-200">
+                          <img
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}&margin=10`}
+                            alt={`QR Code for ${roomName}`}
+                            className="w-[150px] h-[150px]"
+                            crossOrigin="anonymous"
+                          />
+                        </div>
+
+                        {/* Room name — inline edit */}
+                        {isEditingThis ? (
+                          <div className="flex items-center gap-1 mb-1 justify-center">
+                            <input
+                              autoFocus
+                              value={editingRoomName.name}
+                              onChange={e => setEditingRoomName({ ...editingRoomName, name: e.target.value })}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveRoomName(roomNum, editingRoomName.name);
+                                if (e.key === 'Escape') setEditingRoomName(null);
+                              }}
+                              className="border border-purple-400 rounded px-2 py-1 text-sm w-28 text-center focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              maxLength={30}
+                            />
+                            <button
+                              onClick={() => saveRoomName(roomNum, editingRoomName.name)}
+                              className="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700"
+                            >✓</button>
+                            <button
+                              onClick={() => setEditingRoomName(null)}
+                              className="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-300"
+                            >✕</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center gap-1 mb-1 group">
+                            <span className="text-purple-500">🏨</span>
+                            <p className="font-bold text-gray-800 text-lg">{roomName}</p>
+                            <button
+                              onClick={() => setEditingRoomName({ roomNum, name: roomName })}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 text-gray-400 hover:text-purple-600"
+                              title="Rename room"
+                            >
+                              <Edit size={14} />
+                            </button>
+                          </div>
+                        )}
+
+                        <p className="text-xs text-gray-500 mb-2">Scan to order</p>
+                        <a
+                          href={qrUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-purple-500 hover:underline block mb-2"
+                        >
+                          Test Link
+                        </a>
+                        <FeatureGuard feature="qrCodeGeneration">
+                          <button
+                            onClick={() => downloadRoomQRCode(roomNum, qrUrl)}
+                            className="text-sm bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 w-full"
+                          >
+                            📥 Download QR
+                          </button>
+                        </FeatureGuard>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* ── Takeaway & Delivery QR ── */}
+            <div className="mt-10">
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-orange-800">
+                  <strong>🥡 Takeaway & 🛵 Delivery QR Codes:</strong> Customers can scan these to place takeaway or delivery orders directly from their phone.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                {/* Takeaway QR */}
+                {(() => {
+                  const twUrl = `https://waitnot-restaurant.onrender.com/qr-takeaway/${restaurant._id}`;
+                  return (
+                    <div className="bg-white rounded-lg shadow-md p-6 text-center border-t-4 border-orange-400">
+                      <div className="text-3xl mb-2">🥡</div>
+                      <h3 className="font-bold text-gray-800 text-lg mb-3">Takeaway Order</h3>
+                      <div id="qr-takeaway" className="bg-white p-3 rounded-lg mb-3 inline-block border-2 border-orange-200">
+                        <img
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(twUrl)}&margin=10`}
+                          alt="Takeaway QR"
+                          className="w-[150px] h-[150px]"
+                          crossOrigin="anonymous"
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mb-2">Scan to place takeaway order</p>
+                      <a href={twUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-orange-500 hover:underline block mb-3">Test Link</a>
+                      <FeatureGuard feature="qrCodeGeneration">
+                        <button
+                          onClick={() => {
+                            const img = document.querySelector('#qr-takeaway img');
+                            if (!img) return;
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            canvas.width = 520; canvas.height = 580;
+                            ctx.fillStyle = 'white'; ctx.fillRect(0,0,canvas.width,canvas.height);
+                            const qrImg = new Image(); qrImg.crossOrigin = 'anonymous';
+                            qrImg.onload = () => {
+                              ctx.drawImage(qrImg, 60, 60, 400, 400);
+                              ctx.fillStyle = 'black'; ctx.font = 'bold 32px Arial'; ctx.textAlign = 'center';
+                              ctx.fillText(restaurant.name, canvas.width/2, 40);
+                              ctx.font = 'bold 28px Arial'; ctx.fillText('Takeaway Order', canvas.width/2, 500);
+                              ctx.font = '18px Arial'; ctx.fillStyle = '#666'; ctx.fillText('Scan to Order', canvas.width/2, 535);
+                              canvas.toBlob(blob => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.download = `${restaurant.name}-Takeaway-QR.png`; a.href = url; a.click(); URL.revokeObjectURL(url); });
+                            };
+                            qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(twUrl)}&margin=20`;
+                          }}
+                          className="text-sm bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 w-full"
+                        >📥 Download QR</button>
+                      </FeatureGuard>
+                    </div>
+                  );
+                })()}
+
+                {/* Delivery QR */}
+                {(() => {
+                  const delUrl = `https://waitnot-restaurant.onrender.com/qr-delivery/${restaurant._id}`;
+                  return (
+                    <div className="bg-white rounded-lg shadow-md p-6 text-center border-t-4 border-blue-400">
+                      <div className="text-3xl mb-2">🛵</div>
+                      <h3 className="font-bold text-gray-800 text-lg mb-3">Delivery Order</h3>
+                      <div id="qr-delivery" className="bg-white p-3 rounded-lg mb-3 inline-block border-2 border-blue-200">
+                        <img
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(delUrl)}&margin=10`}
+                          alt="Delivery QR"
+                          className="w-[150px] h-[150px]"
+                          crossOrigin="anonymous"
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mb-2">Scan to place delivery order</p>
+                      <a href={delUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-500 hover:underline block mb-3">Test Link</a>
+                      <FeatureGuard feature="qrCodeGeneration">
+                        <button
+                          onClick={() => {
+                            const img = document.querySelector('#qr-delivery img');
+                            if (!img) return;
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            canvas.width = 520; canvas.height = 580;
+                            ctx.fillStyle = 'white'; ctx.fillRect(0,0,canvas.width,canvas.height);
+                            const qrImg = new Image(); qrImg.crossOrigin = 'anonymous';
+                            qrImg.onload = () => {
+                              ctx.drawImage(qrImg, 60, 60, 400, 400);
+                              ctx.fillStyle = 'black'; ctx.font = 'bold 32px Arial'; ctx.textAlign = 'center';
+                              ctx.fillText(restaurant.name, canvas.width/2, 40);
+                              ctx.font = 'bold 28px Arial'; ctx.fillText('Delivery Order', canvas.width/2, 500);
+                              ctx.font = '18px Arial'; ctx.fillStyle = '#666'; ctx.fillText('Scan to Order', canvas.width/2, 535);
+                              canvas.toBlob(blob => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.download = `${restaurant.name}-Delivery-QR.png`; a.href = url; a.click(); URL.revokeObjectURL(url); });
+                            };
+                            qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(delUrl)}&margin=20`;
+                          }}
+                          className="text-sm bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 w-full"
+                        >📥 Download QR</button>
+                      </FeatureGuard>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'history' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto [&>*]:max-w-none">
+            {/* Loading state */}
+            {historyLoading && (
+              <div className="flex items-center justify-center py-16 gap-3">
+                <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm text-gray-500">Loading order history...</p>
+              </div>
+            )}
+            {!historyLoading && (<>
+            {/* Header row */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">Order History</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Completed orders: {orders.filter(o => o.status === 'completed').length}</p>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                {/* Export Excel button */}
+                <button
+                  onClick={() => {
+                    const completed = orders.filter(o => o.status === 'completed');
+                    if (completed.length === 0) { showToast('No completed orders to export', 'error'); return; }
+
+                    // GST computation (assume 5% GST split as 2.5% CGST + 2.5% SGST for intra-state)
+                    const GST_RATE = 5;
+                    const rows = completed.map((o, idx) => {
+                      const subtotal    = (o.items || []).reduce((s, i) => s + (parseFloat(i.price)||0) * (parseInt(i.quantity)||1), 0);
+                      const discount    = parseFloat(o.discountAmount || 0);
+                      const taxableVal  = Math.max(0, subtotal - discount);
+                      const cgst        = parseFloat(((taxableVal * (GST_RATE/2)) / 100).toFixed(2));
+                      const sgst        = cgst;
+                      const igst        = 0;
+                      const cess        = 0;
+                      const totalInv    = parseFloat((taxableVal + cgst + sgst + igst + cess).toFixed(2));
+
+                      const orderTypeLabel = o.orderType === 'dine-in'  ? 'Dine-in'
+                        : o.orderType === 'takeaway' ? 'Takeaway'
+                        : o.orderType === 'delivery' ? 'Delivery'
+                        : o.orderType === 'room'     ? 'Room'
+                        : 'Online';
+
+                      const payMode = (o.paymentMethod || 'cash') === 'cash'   ? 'Cash'
+                        : (o.paymentMethod || '') === 'online' ? 'UPI'
+                        : (o.paymentMethod || '') === 'card'   ? 'Card'
+                        : 'Other';
+
+                      const channel = o.source === 'staff' ? 'Direct' : o.source === 'qr' ? 'Waitnot' : 'Other';
+                      const invoiceDate = o.updatedAt ? new Date(o.updatedAt).toLocaleDateString('en-IN') : '';
+                      const invoiceNo = `INV-${String(o.orderNumber || idx+1).padStart(3,'0')}`;
+
+                      return [
+                        invoiceNo,                         // Invoice Number
+                        invoiceDate,                       // Invoice Date
+                        o._id || '',                       // Order ID
+                        restaurant?._id || '',             // Outlet ID
+                        'B2C',                             // Customer Type
+                        o.customerName || '',              // Customer Name
+                        '',                                // Customer GSTIN
+                        '',                                // Customer State
+                        restaurant?.address || '',         // Place of Supply
+                        '',                                // State Code
+                        orderTypeLabel,                    // Order Type
+                        channel,                           // Sales Channel
+                        payMode,                           // Payment Mode
+                        subtotal.toFixed(2),               // Subtotal
+                        discount.toFixed(2),               // Discount
+                        taxableVal.toFixed(2),             // Taxable Value
+                        cgst.toFixed(2),                   // CGST
+                        sgst.toFixed(2),                   // SGST
+                        igst.toFixed(2),                   // IGST
+                        cess.toFixed(2),                   // CESS
+                        totalInv.toFixed(2),               // Total Invoice Value
+                        `${GST_RATE}%`,                    // GST Rate
+                        '996331',                          // SAC/HSN (restaurant services)
+                        'Completed',                       // Invoice Status
+                        '',                                // Credit Note
+                        '',                                // Debit Note
+                      ];
+                    });
+
+                    const headers = [
+                      'Invoice Number','Invoice Date','Order ID','Outlet ID',
+                      'Customer Type','Customer Name','Customer GSTIN','Customer State',
+                      'Place of Supply','State Code','Order Type','Sales Channel',
+                      'Payment Mode','Subtotal','Discount','Taxable Value',
+                      'CGST','SGST','IGST','CESS','Total Invoice Value',
+                      'GST Rate','SAC/HSN','Invoice Status','Credit Note','Debit Note',
+                    ];
+
+                    const csv = [headers, ...rows]
+                      .map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(','))
+                      .join('\r\n');
+
+                    const BOM = '\uFEFF'; // UTF-8 BOM for Excel
+                    const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+                    const url  = URL.createObjectURL(blob);
+                    const a    = document.createElement('a');
+                    a.href     = url;
+                    a.download = `${(restaurant?.name||'orders').replace(/\s+/g,'-')}-invoice-${new Date().toISOString().slice(0,10)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast('Export downloaded');
+                  }}
+                  className="no-select flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white text-xs font-semibold rounded-lg hover:bg-green-700 active:opacity-80 transition-colors shrink-0"
+                >
+                  ⬇ Export Excel
+                </button>
+                {/* Search bar */}
+                <div className="relative flex-1 sm:w-72">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search by #001, table, customer, item..."
+                    value={historySearch || ''}
+                    onChange={e => setHistorySearch(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {orders.filter(o => o.status === 'completed').length === 0 ? (
+              <div className="text-center py-16 text-gray-400 bg-white rounded-xl">
+                <p className="text-sm">No completed orders yet</p>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+                {/* Table header */}
+                <div className="overflow-x-auto">
+                <div className="min-w-[640px]">
+                <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  <div className="col-span-1">#</div>
+                  <div className="col-span-2">Order</div>
+                  <div className="col-span-2">Customer</div>
+                  <div className="col-span-3">Items</div>
+                  <div className="col-span-2 text-right">Amount</div>
+                  <div className="col-span-1 text-center">Pay</div>
+                  <div className="col-span-1 text-right">Print</div>
+                </div>
+
+                {/* Rows */}
+                {(() => {
+                  const completedOrders = orders.filter(o => o.status === 'completed');
+                  const groupedOrders = [];
+                  const processedIds = new Set();
+
+                  completedOrders.forEach(order => {
+                    if (processedIds.has(order._id)) return;
+                    if (order.orderType === 'dine-in') {
+                      const related = completedOrders.filter(o =>
+                        o.orderType === 'dine-in' &&
+                        o.tableNumber === order.tableNumber &&
+                        Math.abs(new Date(o.updatedAt) - new Date(order.updatedAt)) < 60000
+                      );
+                      related.forEach(o => processedIds.add(o._id));
+                      groupedOrders.push(related);
+                    } else if (order.orderType === 'room') {
+                      const related = completedOrders.filter(o =>
+                        o.orderType === 'room' &&
+                        o.roomNumber === order.roomNumber &&
+                        Math.abs(new Date(o.updatedAt) - new Date(order.updatedAt)) < 60000
+                      );
+                      related.forEach(o => processedIds.add(o._id));
+                      groupedOrders.push(related);
+                    } else {
+                      processedIds.add(order._id);
+                      groupedOrders.push([order]);
+                    }
+                  });
+
+                  return groupedOrders.map((orderGroup, idx) => {
+                    const first = orderGroup[0];
+                    const isDineIn = first.orderType === 'dine-in';
+                    const isRoom = first.orderType === 'room';
+                    const combinedItems = {};
+                    let total = 0;
+                    orderGroup.forEach(o => {
+                      total += o.totalAmount;
+                      o.items.forEach(i => {
+                        if (combinedItems[i.name]) { combinedItems[i.name].qty += i.quantity; combinedItems[i.name].amt += i.price * i.quantity; }
+                        else combinedItems[i.name] = { qty: i.quantity, amt: i.price * i.quantity };
+                      });
+                    });
+                    const itemList = Object.entries(combinedItems);
+                    const label = isDineIn
+                      ? `${first.source === 'staff' ? 'Staff · ' : ''}Table ${first.tableNumber}`
+                      : isRoom
+                      ? `Room ${first.roomNumber}`
+                      : first.orderType === 'takeaway' ? 'Takeaway'
+                      : first.orderType === 'delivery' ? 'Delivery'
+                      : 'Order';
+
+                    // Filter by search
+                    if (historySearch) {
+                      const q = historySearch.toLowerCase().replace(/^#/, '');
+                      const matchesLabel = label.toLowerCase().includes(q);
+                      const matchesCustomer = (first.customerName || '').toLowerCase().includes(q);
+                      const matchesItem = Object.keys(combinedItems).some(n => n.toLowerCase().includes(q));
+                      const matchesOrderNum = first.orderNumber
+                        ? String(first.orderNumber).padStart(3, '0').includes(q)
+                        : false;
+                      if (!matchesLabel && !matchesCustomer && !matchesItem && !matchesOrderNum) return null;
+                    }
+
+                    const orderNum = idx + 1;
+
+                    return (
+                      <div key={idx} className={`grid grid-cols-12 gap-2 px-4 py-3 items-start border-b border-gray-50 hover:bg-gray-50 transition-colors text-sm ${idx % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
+                        {/* # */}
+                        <div className="col-span-1">
+                          <p className="font-bold text-gray-700 text-sm">#{String(first.orderNumber || orderNum).padStart(3, '0')}</p>
+                        </div>
+                        {/* Order */}
+                        <div className="col-span-2">
+                          <p className="font-semibold text-gray-800">{label}</p>
+                          <p className="text-xs text-gray-400">{new Date(first.updatedAt).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</p>
+                          {first.paymentMethod && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${first.paymentMethod === 'online' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}`}>
+                              {first.paymentMethod}
+                            </span>
+                          )}
+                        </div>
+                        {/* Customer */}
+                        <div className="col-span-2">
+                          <p className="text-gray-700 truncate">{first.customerName || '—'}</p>
+                          {first.customerPhone && <p className="text-xs text-gray-400">{first.customerPhone}</p>}
+                        </div>
+                        {/* Items */}
+                        <div className="col-span-3 space-y-0.5">
+                          {itemList.slice(0, 3).map(([name, d]) => (
+                            <p key={name} className="text-gray-600 text-xs truncate">{name} ×{d.qty}</p>
+                          ))}
+                          {itemList.length > 3 && <p className="text-xs text-gray-400">+{itemList.length - 3} more</p>}
+                        </div>
+                        {/* Amount */}
+                        <div className="col-span-2 text-right">
+                          <p className="font-bold text-primary">₹{total}</p>
+                        </div>
+                        {/* Pay status */}
+                        <div className="col-span-1 text-center">
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${first.paymentStatus === 'paid' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                            {first.paymentStatus === 'paid' ? 'Paid' : 'Pending'}
+                          </span>
+                        </div>
+                        {/* Print */}
+                        <div className="col-span-1 text-right">
+                          <button
+                            onClick={() => orderGroup.length === 1 ? printIndividualReceipt(first) : printReceipt(isDineIn ? first.tableNumber : 'Order', orderGroup, total)}
+                            className="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-blue-50 transition-colors"
+                            title="Print receipt"
+                          >
+                            <Printer size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+                </div>{/* min-w-[640px] */}
+                </div>{/* overflow-x-auto */}
+              </div>
+            )}
+            </>)}
+          </div>
+        )}
+
+        {/* Feedback Tab */}
+        {activeTab === 'feedback' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto space-y-3 sm:space-y-4">
+            <div className="bg-white rounded-lg shadow-md p-3 sm:p-4 mb-3 sm:mb-4">
+              <h2 className="text-lg sm:text-xl font-bold text-gray-800">💬 Customer Feedback</h2>
+              <p className="text-gray-600 text-xs sm:text-sm">
+                View and respond to customer feedback and reviews
+              </p>
+              
+              {/* Feedback Stats */}
+              {feedbackStats && (
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-blue-50 p-3 rounded-lg text-center">
+                    <div className="text-2xl font-bold text-blue-600">{feedbackStats.totalFeedback}</div>
+                    <div className="text-xs text-blue-600">Total Reviews</div>
+                  </div>
+                  <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                    <div className="text-2xl font-bold text-yellow-600">
+                      {feedbackStats.averageRating ? feedbackStats.averageRating.toFixed(1) : '0.0'}⭐
+                    </div>
+                    <div className="text-xs text-yellow-600">Average Rating</div>
+                  </div>
+                  <div className="bg-green-50 p-3 rounded-lg text-center">
+                    <div className="text-2xl font-bold text-green-600">{feedbackStats.responded}</div>
+                    <div className="text-xs text-green-600">Responded</div>
+                  </div>
+                  <div className="bg-red-50 p-3 rounded-lg text-center">
+                    <div className="text-2xl font-bold text-red-600">{feedbackStats.pendingResponses}</div>
+                    <div className="text-xs text-red-600">Pending</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Feedback List */}
+            {feedback.map((item) => (
+              <div key={item._id} className="bg-white rounded-lg shadow-md p-4 sm:p-6">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h3 className="font-bold text-gray-800">
+                        {item.isAnonymous ? 'Anonymous Customer' : item.customerName}
+                      </h3>
+                      <div className="flex items-center">
+                        {[...Array(5)].map((_, i) => (
+                          <span
+                            key={i}
+                            className={`text-lg ${
+                              i < item.rating ? 'text-yellow-400' : 'text-gray-300'
+                            }`}
+                          >
+                            ⭐
+                          </span>
+                        ))}
+                      </div>
+                      <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                        {item.feedbackType}
+                      </span>
+                    </div>
+                    
+                    {!item.isAnonymous && (
+                      <div className="text-sm text-gray-600 mb-2">
+                        {item.customerPhone && `${item.customerPhone}`}
+                        {item.customerEmail && ` | 📧 ${item.customerEmail}`}
+                        {item.tableNumber && ` | 🪑 Table ${item.tableNumber}`}
+                      </div>
+                    )}
+                    
+                    <p className="text-gray-700 mb-3">{item.feedbackText}</p>
+                    
+                    <div className="text-xs text-gray-500">
+                      {new Date(item.createdAt).toLocaleDateString('en-IN', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 ml-4">
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      item.status === 'responded' 
+                        ? 'bg-green-100 text-green-800' 
+                        : item.status === 'archived'
+                        ? 'bg-gray-100 text-gray-800'
+                        : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {item.status}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Restaurant Response */}
+                {item.restaurantResponse && (
+                  <div className="bg-blue-50 p-3 rounded-lg mb-3">
+                    <div className="text-sm font-semibold text-blue-800 mb-1">Restaurant Response:</div>
+                    <p className="text-blue-700 text-sm">{item.restaurantResponse}</p>
+                    <div className="text-xs text-blue-600 mt-1">
+                      Responded on {new Date(item.respondedAt).toLocaleDateString('en-IN')}
+                    </div>
+                  </div>
+                )}
+
+                {/* Response Form */}
+                {item.status === 'active' && (
+                  <div className="border-t pt-3">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Type your response..."
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter' && e.target.value.trim()) {
+                            handleFeedbackResponse(item._id, e.target.value.trim());
+                            e.target.value = '';
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={(e) => {
+                          const input = e.target.parentElement.querySelector('input');
+                          if (input.value.trim()) {
+                            handleFeedbackResponse(item._id, input.value.trim());
+                            input.value = '';
+                          }
+                        }}
+                        className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-red-600 text-sm"
+                      >
+                        Reply
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex gap-2 mt-3">
+                  {item.status === 'active' && (
+                    <button
+                      onClick={() => handleFeedbackStatusUpdate(item._id, 'archived')}
+                      className="px-3 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600"
+                    >
+                      Archive
+                    </button>
+                  )}
+                  {item.status === 'archived' && (
+                    <button
+                      onClick={() => handleFeedbackStatusUpdate(item._id, 'active')}
+                      className="px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
+                    >
+                      Restore
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+            
+            {feedback.length === 0 && (
+              <div className="text-center py-12 text-gray-500">
+                <div className="text-4xl mb-4">💬</div>
+                <div>No customer feedback yet</div>
+                <div className="text-sm mt-2">Customer feedback will appear here when submitted</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Staff Management Tab */}
+        {activeTab === 'staff-management' && isFeatureEnabled('staffManagement') && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto">
+            {/* KDS Quick Link */}
+            <a
+              href="/kitchen-display"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-xl px-5 py-3.5 mb-4 hover:bg-orange-100 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🍳</span>
+                <div>
+                  <p className="font-bold text-orange-800 text-sm">Kitchen Display System</p>
+                  <p className="text-xs text-orange-600">Open KDS in a new tab — for kitchen staff to manage order preparation</p>
+                </div>
+              </div>
+              <span className="text-orange-400 text-xl font-bold">↗</span>
+            </a>
+            <StaffManagement restaurantId={restaurant?._id} />
+          </div>
+        )}
+
+        {/* Discounts Tab */}
+        {activeTab === 'discounts' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto">
+            <DiscountManager restaurant={restaurant} />
+          </div>
+        )}
+
+        {/* Staff Order Tab */}
+        {activeTab === 'Staff' && isFeatureEnabled('staffOrders') && (
+          <div style={{display:'flex', flexDirection:'column', flex:1, overflow:'hidden'}}>
+            {staffView === 'tables' ? (
+              /* ── TABLE GRID VIEW ── */
+              <div style={{flex:1, overflowY:'auto', overflowX:'hidden'}} className="px-4 sm:px-6 py-4 bg-canvas">
+                <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">Tables</h2>
+                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 gap-2 mb-4">
+                  {Array.from({ length: restaurant?.tables || 0 }, (_, i) => i + 1).map(n => {
+                    const tOrders = activeDineInOrders.filter(o => parseInt(o.tableNumber) === n);
+                    const isOccupied = tOrders.length > 0;
+                    const tTotal = tOrders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+                    return (
+                      <button key={n}
+                        onClick={() => { setStaffSelectedTable(n); setStaffView('order'); setReceptionistOrder(prev => ({ ...prev, orderType: 'dine-in', tableNumber: String(n), items: [], packagingCharge: 0, deliveryCharge: 0, specialInstructions: '', customerName: '', customerPhone: '' })); }}
+                        className={`table-card no-select relative rounded-card py-3.5 px-1 border flex flex-col items-center gap-1 ${isOccupied ? 'bg-red-50/70 border-red-200 hover:border-red-400' : 'bg-green-50/60 border-green-200 hover:border-green-400'}`}
+                      >
+                        <span className={`text-xl font-bold leading-none ${isOccupied ? 'text-red-700' : 'text-green-700'}`}>{n}</span>
+                        {isOccupied ? <span className="text-xs font-semibold text-red-600 leading-none">₹{tTotal}</span> : <span className="text-xs font-medium text-green-500 leading-none">Free</span>}
+                        {isOccupied && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse border-2 border-white"></span>}
+                      </button>
+                    );
+                  })}
+                  {(!restaurant?.tables || restaurant.tables === 0) && <p className="col-span-full text-gray-400 text-sm text-center py-4">No tables configured.</p>}
+                </div>
+                {(restaurant?.rooms || 0) > 0 && (
+                  <div>
+                    <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3 mt-5">Rooms</h2>
+                    <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 gap-2 mb-2">
+                      {Array.from({ length: restaurant.rooms }, (_, i) => i + 1).map(n => {
+                        const roomLabel = restaurant?.features?.roomNames?.[n] || ('R' + n);
+                        const rOrders = activeRoomOrders.filter(o => parseInt(o.roomNumber) === n);
+                        const isOccupied = rOrders.length > 0;
+                        const rTotal = rOrders.reduce((s, o) => s + (o.totalAmount || 0), 0);
+                        return (
+                          <button key={n}
+                            onClick={() => { setStaffSelectedTable(n); setStaffView('order'); setReceptionistOrder(prev => ({ ...prev, orderType: 'room', tableNumber: '', roomNumber: String(n), items: [], packagingCharge: 0, deliveryCharge: 0, specialInstructions: '', customerName: '', customerPhone: '' })); }}
+                            className={`table-card no-select relative rounded-card py-3.5 px-1 border flex flex-col items-center gap-1 ${isOccupied ? 'bg-orange-50/70 border-orange-200 hover:border-orange-400' : 'bg-blue-50/60 border-blue-200 hover:border-blue-400'}`}
+                          >
+                            <span className={`text-xs font-bold leading-none text-center ${isOccupied ? 'text-orange-700' : 'text-blue-600'}`}>{roomLabel}</span>
+                            {isOccupied ? <span className="text-xs font-semibold text-orange-600 leading-none">₹{rTotal}</span> : <span className="text-xs font-medium text-blue-400 leading-none">Free</span>}
+                            {isOccupied && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-orange-500 rounded-full animate-pulse border-2 border-white"></span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3 mt-5">Quick Order</h2>
+                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 gap-2">
+                  <button onClick={() => { setStaffSelectedTable(null); setStaffView('order'); setReceptionistOrder(prev => ({ ...prev, orderType: 'takeaway', tableNumber: '', items: [], packagingCharge: 0, deliveryCharge: 0, customerName: '', customerPhone: '' })); }} className="table-card no-select rounded-card py-3.5 px-1 border border-orange-200 bg-orange-50/70 hover:border-orange-400 flex flex-col items-center gap-1"><span className="text-xs font-bold text-orange-600 leading-none">TW</span></button>
+                  <button onClick={() => { setStaffSelectedTable(null); setStaffView('order'); setReceptionistOrder(prev => ({ ...prev, orderType: 'delivery', tableNumber: '', items: [], packagingCharge: 0, deliveryCharge: 0, customerName: '', customerPhone: '' })); }} className="table-card no-select rounded-card py-3.5 px-1 border border-blue-200 bg-blue-50/70 hover:border-blue-400 flex flex-col items-center gap-1"><span className="text-xs font-bold text-blue-600 leading-none">DEL</span></button>
+                </div>
+              </div>
+            ) : (
+              /* ── ORDER INTERFACE — 3-column POS ── */
+              <div style={{display:'flex', width:'100%', height:'100%', overflow:'hidden'}}>
+                {/* COL 1: Category */}
+                <div style={{width:'120px', flexShrink:0, display:'flex', flexDirection:'column', height:'100%', overflow:'hidden', background:'#fff', borderRight:'1px solid #f3f4f6'}}>
+                  <div style={{overflowY:'auto', overflowX:'hidden', flex:1}}>
+                    {['all', ...[...new Set(restaurant?.menu?.filter(i => i.available).map(i => i.category).filter(c => c && c.trim()) || [])]].map(cat => (
+                      <button key={cat} onClick={() => setSelectedCategory(cat)}
+                        className={"px-2 py-2.5 text-xs font-semibold text-left border-b border-gray-100 transition-all w-full truncate " + (selectedCategory === cat ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-50')}>
+                        {cat === 'all' ? 'All' : cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* COL 2: Menu */}
+                <div style={{flex:1, display:'flex', flexDirection:'column', height:'100%', overflow:'hidden', background:'#f9fafb'}}>
+                  <div className="bg-white border-b border-gray-100 px-3 py-2 flex flex-wrap gap-2 items-center" style={{flexShrink:0}}>
+                    {staffSelectedTable && staffIsRoom ? (
+                      <>
+                        <button onClick={() => { setStaffView('tables'); setStaffSelectedTable(null); setReceptionistOrder(prev => ({ ...prev, orderType: 'takeaway', tableNumber: '', roomNumber: '', items: [], packagingCharge: 0, deliveryCharge: 0, specialInstructions: '', customerName: '', customerPhone: '' })); }} className="flex items-center gap-1 text-xs font-bold text-white bg-gray-700 hover:bg-gray-900 px-2.5 py-1.5 rounded-lg">&#8592; Back</button>
+                        <span className="text-xs font-bold text-white bg-orange-500 px-3 py-1 rounded-lg">{staffSlotLabel}</span>
+                      </>
+                    ) : staffSelectedTable ? (
+                      <>
+                        <button onClick={() => { setStaffView('tables'); setStaffSelectedTable(null); setReceptionistOrder(prev => ({ ...prev, orderType: 'takeaway', tableNumber: '', items: [], packagingCharge: 0, deliveryCharge: 0, specialInstructions: '', customerName: '', customerPhone: '' })); }} className="flex items-center gap-1 text-xs font-bold text-white bg-gray-700 hover:bg-gray-900 px-2.5 py-1.5 rounded-lg">&#8592; Back</button>
+                        <span className="text-xs font-bold text-white bg-primary px-3 py-1 rounded-lg">T{staffSelectedTable}</span>
+                      </>
+                    ) : receptionistOrder.orderType === 'takeaway' ? (
+                      <>
+                        <button onClick={() => { setStaffView('tables'); setReceptionistOrder(prev => ({ ...prev, items: [], packagingCharge: 0, deliveryCharge: 0, specialInstructions: '', customerName: '', customerPhone: '' })); }} className="flex items-center gap-1 text-xs font-bold text-white bg-gray-700 hover:bg-gray-900 px-2.5 py-1.5 rounded-lg">&#8592; Back</button>
+                        <span className="text-xs font-bold text-white bg-orange-500 px-3 py-1 rounded-lg">TW</span>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => { setStaffView('tables'); setReceptionistOrder(prev => ({ ...prev, items: [], packagingCharge: 0, deliveryCharge: 0, deliveryAddress: '', specialInstructions: '', customerName: '', customerPhone: '' })); }} className="flex items-center gap-1 text-xs font-bold text-white bg-gray-700 hover:bg-gray-900 px-2.5 py-1.5 rounded-lg">&#8592; Back</button>
+                        <span className="text-xs font-bold text-white bg-blue-500 px-3 py-1 rounded-lg">DEL</span>
+                        <input type="text" value={receptionistOrder.deliveryAddress} onChange={e => setReceptionistOrder(prev => ({...prev, deliveryAddress: e.target.value}))} placeholder="Address" className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none flex-1 min-w-[100px]" />
+                      </>
+                    )}
+                    <select value={receptionistOrder.waiterId} onChange={e => { const w = availableWaiters.find(x => x.id === parseInt(e.target.value)); setReceptionistOrder(prev => ({...prev, waiterId: e.target.value, waiterNumber: w?.waiter_number||''})); }} className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none bg-white">
+                      <option value="">Waiter</option>
+                      {availableWaiters.map(w => <option key={w.id} value={w.id}>{w.waiter_number}</option>)}
+                    </select>
+                    <input type="text" value={receptionistOrder.customerName} onChange={e => setReceptionistOrder(prev => ({...prev, customerName: e.target.value}))} placeholder="Name" className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none min-w-[70px]" />
+                  </div>
+                  <div className="px-3 py-1.5 bg-white border-b border-gray-100" style={{flexShrink:0}}>
+                    <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
+                      <Search size={13} className="text-gray-400 shrink-0" />
+                      <input value={staffSearchQuery} onChange={e => setStaffSearchQuery(e.target.value)} placeholder="Search..." className="flex-1 text-xs outline-none bg-transparent text-gray-700 placeholder-gray-400" />
+                      {staffSearchQuery && <button onClick={() => setStaffSearchQuery('')}><X size={13} className="text-gray-400" /></button>}
+                    </div>
+                  </div>
+                  <div style={{flex:1, overflowY:'auto', overflowX:'hidden', padding:'8px'}}>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
+                      {restaurant?.menu?.filter(i => i.available)
+                        .filter(i => selectedCategory === 'all' || i.category === selectedCategory)
+                        .filter(i => !staffSearchQuery.trim() || i.name.toLowerCase().includes(staffSearchQuery.toLowerCase()))
+                        .map(item => {
+                          const inOrder = receptionistOrder.items.find(x => x._id === item._id);
+                          return (
+                            <div key={item._id}
+                              style={{height:'90px', display:'flex', flexDirection:'column', justifyContent:'space-between'}}
+                              className={"relative bg-white rounded-xl border-2 p-2 cursor-pointer transition-all select-none " + (inOrder ? 'border-primary bg-primary/5' : 'border-gray-200 hover:border-primary')}
+                              onClick={() => { if (!inOrder) updateReceptionistOrderItem(item, 1); }}>
+                              <div>
+                                <span className={"absolute top-1.5 left-1.5 w-2 h-2 rounded-sm border " + (item.isVeg ? 'border-green-600 bg-green-500' : 'border-red-600 bg-red-500')}></span>
+                                <p className="text-xs font-semibold text-gray-800 leading-tight pt-3.5 line-clamp-2">{item.name}</p>
+                                <p className="text-xs text-gray-400 mt-0.5">₹{item.price}</p>
+                              </div>
+                              {inOrder ? (
+                                <div className="flex items-center justify-between gap-1">
+                                  <button onClick={e => { e.stopPropagation(); updateReceptionistOrderItem(item, -1); }} className="w-6 h-6 rounded bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-700">-</button>
+                                  <span className="text-sm font-bold text-primary">{inOrder.quantity}</span>
+                                  <button onClick={e => { e.stopPropagation(); updateReceptionistOrderItem(item, 1); }} className="w-6 h-6 rounded bg-primary text-white flex items-center justify-center text-sm font-bold">+</button>
+                                </div>
+                              ) : (
+                                <div className="flex justify-end"><span className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center text-primary font-bold text-lg leading-none">+</span></div>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </div>
+                {/* COL 3: Summary */}
+                <div style={{width:'360px', flexShrink:0, display:'flex', flexDirection:'column', height:'100%', overflow:'hidden', background:'#fff', borderLeft:'1px solid #f3f4f6'}}>
+                  <div className="px-4 py-3 border-b border-gray-100 bg-gray-50" style={{flexShrink:0}}>
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-gray-900 text-sm">{staffSlotLabel}</h3>
+                      {receptionistOrder.items.length > 0 && <button onClick={() => setReceptionistOrder(prev => ({...prev, items: []}))} className="text-xs text-gray-400 hover:text-red-500">Clear</button>}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">{receptionistOrder.customerName || 'Guest'}</p>
+                  </div>
+                  {staffExistingOrders.length > 0 && (
+                    <div className="border-b border-gray-100 bg-orange-50/50" style={{flexShrink:0}}>
+                      <div className="px-4 pt-2 pb-1 flex items-center justify-between">
+                        <span className="text-xs font-bold text-orange-700">Running</span>
+                        <div className="flex gap-1">
+                          {staffExistingOrders[0] && staffExistingOrders[0].source === 'staff' ? (
+                            <>
+                              <button onClick={() => printKitchenOrder(staffSelectedTable, staffExistingOrders)} className="text-xs px-2 py-1 bg-orange-500 text-white rounded font-bold">KOT</button>
+                              <button onClick={() => printReceipt(staffSelectedTable, staffExistingOrders, staffExistingTotal)} className="text-xs px-2 py-1 bg-blue-500 text-white rounded font-bold">Bill</button>
+                            </>
+                          ) : (
+                            <>
+                              <button onClick={() => printKitchenOrder(staffSelectedTable, staffExistingOrders)} className="text-xs px-2 py-1 bg-orange-500 text-white rounded font-bold">KOT</button>
+                              <button onClick={() => printReceipt(staffSelectedTable, staffExistingOrders, staffExistingTotal)} className="text-xs px-2 py-1 bg-blue-500 text-white rounded font-bold">Bill</button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="px-4 pb-1 max-h-24 overflow-y-auto">
+                        {(() => {
+                          const merged = {};
+                          staffExistingOrders.forEach(o => (o.items||[]).forEach(i => {
+                            if (merged[i.name]) merged[i.name].quantity += (i.quantity || 1);
+                            else merged[i.name] = { name: i.name, price: parseFloat(i.price) || 0, quantity: i.quantity || 1 };
+                          }));
+                          return Object.values(merged).map((i, idx) => (
+                            <div key={idx} className="flex justify-between text-xs text-gray-600 py-0.5">
+                              <span>{i.name} x{i.quantity}</span>
+                              <span>₹{(i.price * i.quantity).toFixed(0)}</span>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                      <div className="px-4 pb-2 flex flex-wrap gap-1.5">
+                        <button onClick={() => staffIsRoom ? clearRoomAndSaveToHistory(staffSelectedTable, staffExistingOrders, staffExistingTotal) : clearTableAndSaveToHistory(staffSelectedTable, staffExistingOrders, staffExistingTotal)} className="text-xs px-2.5 py-1.5 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700">Clear</button>
+                        <button onClick={() => setShiftModal({ orders: staffExistingOrders, type: staffIsRoom ? 'room' : 'table', current: staffSelectedTable })} className="text-xs px-2.5 py-1.5 bg-indigo-500 text-white rounded-lg font-bold hover:bg-indigo-600">Shift</button>
+                        {staffExistingOrders.length > 0 && staffExistingOrders.some(o => o.status !== 'completed' && o.status !== 'cancelled') && (
+                          <button onClick={() => cancelAllOrders(staffExistingOrders)} className="text-xs px-2.5 py-1.5 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600">Cancel</button>
+                        )}
+                        {staffExistingOrders[0] && (
+                          <button onClick={() => openEditOrderModal(staffExistingOrders[0])} className="text-xs px-2.5 py-1.5 bg-green-500 text-white rounded-lg font-bold hover:bg-green-600">Edit</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{flex:1, overflowY:'auto', overflowX:'hidden', padding:'4px 16px', minHeight:0}}>
+                    {receptionistOrder.items.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-full text-gray-300">
+                        <ShoppingCart size={28} className="mb-1 opacity-30" />
+                        <p className="text-xs">{staffExistingOrders.length > 0 ? 'Add more items' : 'Add items from menu'}</p>
+                      </div>
+                    ) : receptionistOrder.items.map((item, idx) => (
+                      <div key={idx} className="flex items-center gap-2 py-1.5 border-b border-gray-50">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-gray-800 truncate">{item.name}</p>
+                          {item.complimentary ? (
+                            <span className="text-xs text-green-600 font-semibold">Comp</span>
+                          ) : (
+                            <div className="flex items-center gap-0.5">
+                              <span className="text-xs text-gray-400">₹</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={item.price}
+                                onClick={e => e.stopPropagation()}
+                                onChange={e => setReceptionistOrder(prev => ({
+                                  ...prev,
+                                  items: prev.items.map((it, i) => i === idx ? { ...it, price: parseFloat(e.target.value) || 0 } : it)
+                                }))}
+                                className="text-xs text-gray-500 bg-transparent w-14 outline-none border-b border-dashed border-gray-300 focus:border-primary"
+                              />
+                            </div>
+                          )}
+                        </div>
+                        <button onClick={() => setReceptionistOrder(prev => ({ ...prev, items: prev.items.map((it, i) => i === idx ? { ...it, complimentary: !it.complimentary } : it) }))}
+                          className={"w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs transition-colors shrink-0 " + (item.complimentary ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 text-gray-300 hover:border-green-400')}>v</button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button onClick={() => updateReceptionistOrderItem(item, -1)} className="w-5 h-5 rounded bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-600">-</button>
+                          <span className="w-4 text-center text-xs font-bold">{item.quantity}</span>
+                          <button onClick={() => updateReceptionistOrderItem(item, 1)} className="w-5 h-5 rounded bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">+</button>
+                        </div>
+                        <p className="text-xs font-semibold text-gray-700 w-12 text-right shrink-0">
+                          {item.complimentary ? <span className="line-through text-gray-300">₹{item.price * item.quantity}</span> : '₹' + (item.price * item.quantity)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{flexShrink:0, borderTop:'1px solid #f3f4f6', background:'#fff'}}>
+                    <div className="px-4 py-2 space-y-1.5">
+                      <input type="text" value={receptionistOrder.specialInstructions} onChange={e => setReceptionistOrder(prev => ({...prev, specialInstructions: e.target.value}))} placeholder="Special instructions..." className="w-full text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary" />
+                      {receptionistOrder.orderType === 'takeaway' && (
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-500 shrink-0">Packaging Rs.</label>
+                          <input type="number" min="0" value={receptionistOrder.packagingCharge || ''} onChange={e => setReceptionistOrder(prev => ({...prev, packagingCharge: parseFloat(e.target.value) || 0}))} placeholder="0" className="text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none w-24" />
+                        </div>
+                      )}
+                      {receptionistOrder.orderType === 'delivery' && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <label className="text-xs text-gray-500 shrink-0">Delivery Rs.</label>
+                            <input type="number" min="0" value={receptionistOrder.deliveryCharge || ''} onChange={e => setReceptionistOrder(prev => ({...prev, deliveryCharge: parseFloat(e.target.value) || 0}))} placeholder="0" className="text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none w-24" />
+                          </div>
+                          <input type="text" value={receptionistOrder.customerName} onChange={e => setReceptionistOrder(prev => ({...prev, customerName: e.target.value}))} placeholder="Customer name *" className={"w-full text-xs border rounded px-2 py-1.5 focus:outline-none " + (!receptionistOrder.customerName ? 'border-red-300 bg-red-50' : 'border-gray-200')} />
+                          <input type="text" value={receptionistOrder.deliveryAddress} onChange={e => setReceptionistOrder(prev => ({...prev, deliveryAddress: e.target.value}))} placeholder="Delivery address *" className={"w-full text-xs border rounded px-2 py-1.5 focus:outline-none " + (!receptionistOrder.deliveryAddress ? 'border-red-300 bg-red-50' : 'border-gray-200')} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-4 pb-3">
+                      {receptionistOrder.items.length > 0 && (
+                        <div className="flex justify-between items-center text-xs text-gray-500 mb-2">
+                          <span>{receptionistOrder.items.reduce((s,i)=>s+i.quantity,0)} items</span>
+                          <span className="text-base font-bold text-gray-900">Rs.{receptionistOrder.items.filter(i => !i.complimentary).reduce((s, i) => s + i.price * i.quantity, 0) + (receptionistOrder.orderType === 'takeaway' ? (receptionistOrder.packagingCharge||0) : receptionistOrder.orderType === 'delivery' ? (receptionistOrder.deliveryCharge||0) : 0)}</span>
+                        </div>
+                      )}
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button onClick={printStaffKOTOnly} className="bg-orange-500 text-white py-2.5 rounded-lg text-xs font-bold hover:bg-orange-600">KOT</button>
+                        <button onClick={printStaffBillOnly} className="bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold hover:bg-blue-600">Bill</button>
+                        <button onClick={clearReceptionistOrder} className="bg-green-500 text-white py-2.5 rounded-lg text-xs font-bold hover:bg-green-600">Save</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {receptionistOrder.items.length > 0 && (
+                  <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-3 py-2 flex items-center gap-2 z-20">
+                    <span className="flex-1 font-bold text-sm">Rs.{receptionistOrder.items.filter(i => !i.complimentary).reduce((s,i) => s+i.price*i.quantity, 0) + (receptionistOrder.orderType === 'takeaway' ? (receptionistOrder.packagingCharge||0) : receptionistOrder.orderType === 'delivery' ? (receptionistOrder.deliveryCharge||0) : 0)}</span>
+                    <button onClick={printStaffKOTOnly} className="bg-orange-500 text-white px-3 py-2 rounded-lg text-xs font-bold">KOT</button>
+                    <button onClick={printStaffBillOnly} className="bg-blue-500 text-white px-3 py-2 rounded-lg text-xs font-bold">Bill</button>
+                    <button onClick={clearReceptionistOrder} className="bg-green-500 text-white px-3 py-2 rounded-lg text-xs font-bold">Save</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Notification Settings Modal */}
+      {showNotificationSettings && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold text-gray-800">🔔 Notification Settings</h2>
+              <button
+                onClick={() => setShowNotificationSettings(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Enable/Disable Notifications */}
+              <div>
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div>
+                    <span className="text-gray-700 font-semibold">Order Notification Sound</span>
+                    <p className="text-sm text-gray-500">Play sound when new orders arrive</p>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={notificationEnabled}
+                      onChange={(e) => handleNotificationToggle(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <div className={`w-12 h-6 rounded-full transition-colors ${
+                      notificationEnabled ? 'bg-primary' : 'bg-gray-300'
+                    }`}>
+                      <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${
+                        notificationEnabled ? 'translate-x-6' : 'translate-x-0.5'
+                      } mt-0.5`}></div>
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Volume Control */}
+              {notificationEnabled && (
+                <div>
+                  <label className="block text-gray-700 font-semibold mb-2">
+                    Volume: {Math.round(notificationVolume * 100)}%
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={notificationVolume}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>🔇 Quiet</span>
+                    <span>🔊 Loud</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Test Sound Button */}
+              {notificationEnabled && (
+                <div>
+                  <button
+                    onClick={testNotificationSound}
+                    className="w-full bg-gradient-to-r from-blue-500 to-indigo-500 text-white py-2 px-4 rounded-lg hover:from-blue-600 hover:to-indigo-600 font-semibold flex items-center justify-center gap-2"
+                  >
+                    🔊 Test Notification Sound
+                  </button>
+                  <p className="text-xs text-gray-500 mt-2 text-center">
+                    Click to test the notification sound
+                  </p>
+                </div>
+              )}
+
+              {/* Info Section */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h3 className="font-semibold text-blue-800 mb-2">ℹ️ How it works</h3>
+                <ul className="text-sm text-blue-700 space-y-1">
+                  <li>• Sound plays automatically when new orders arrive</li>
+                  <li>• Works for both dine-in and delivery orders</li>
+                  <li>• Browser must allow audio playback</li>
+                  <li>• Settings are saved for this restaurant</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setShowNotificationSettings(false)}
+                className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-red-600 font-semibold"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Edit Order Modal (for completed staff orders) */}
+      {showEditOrderModal && editingOrder && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                  <Edit size={24} />
+                  Edit Order
+                </h2>
+                <button
+                  onClick={closeEditOrderModal}
+                  className="text-gray-500 hover:text-gray-700 text-2xl"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Order Details */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-800">Order Details</h3>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Customer Name</label>
+                    <input
+                      type="text"
+                      value={editingOrder.customerName}
+                      onChange={(e) => setEditingOrder(prev => ({ ...prev, customerName: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Customer Phone</label>
+                    <input
+                      type="tel"
+                      value={editingOrder.customerPhone}
+                      onChange={(e) => setEditingOrder(prev => ({ ...prev, customerPhone: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Order Type</label>
+                    <select
+                      value={editingOrder.orderType}
+                      onChange={(e) => setEditingOrder(prev => ({ ...prev, orderType: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="takeaway">Takeaway</option>
+                      <option value="delivery">Delivery</option>
+                      <option value="dine-in">Dine-in</option>
+                    </select>
+                  </div>
+
+                  {editingOrder.orderType === 'dine-in' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Table Number</label>
+                      <input
+                        type="number"
+                        value={editingOrder.tableNumber}
+                        onChange={(e) => setEditingOrder(prev => ({ ...prev, tableNumber: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                      />
+                    </div>
+                  )}
+
+                  {editingOrder.orderType === 'delivery' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Address</label>
+                      <textarea
+                        value={editingOrder.deliveryAddress}
+                        onChange={(e) => setEditingOrder(prev => ({ ...prev, deliveryAddress: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                        rows="3"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Special Instructions</label>
+                    <textarea
+                      value={editingOrder.specialInstructions}
+                      onChange={(e) => setEditingOrder(prev => ({ ...prev, specialInstructions: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                      rows="3"
+                    />
+                  </div>
+                </div>
+
+                {/* Order Items */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-800">Order Items</h3>
+                  
+                  {editingOrder.items.length > 0 ? (
+                    <div className="space-y-3 max-h-60 overflow-y-auto">
+                      {editingOrder.items.map((item, index) => (
+                        <div key={index} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-800">{item.name}</div>
+                            <div className="text-sm text-gray-600">₹{item.price} each</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => updateEditOrderItem(index, 'quantity', Math.max(1, item.quantity - 1))}
+                              className="w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
+                            >
+                              -
+                            </button>
+                            <span className="w-8 text-center font-medium">{item.quantity}</span>
+                            <button
+                              onClick={() => updateEditOrderItem(index, 'quantity', item.quantity + 1)}
+                              className="w-8 h-8 bg-green-500 text-white rounded-full flex items-center justify-center hover:bg-green-600"
+                            >
+                              +
+                            </button>
+                            <button
+                              onClick={() => removeEditOrderItem(index)}
+                              className="ml-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                          <div className="ml-4 font-medium text-gray-800">
+                            ₹{item.price * item.quantity}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center text-gray-500 py-8">
+                      No items in order. Add items from the menu below.
+                    </div>
+                  )}
+
+                  {/* Add Items from Menu */}
+                  <div className="border-t pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-medium text-gray-800">Add Items from Menu</h4>
+                      {editOrderSearchQuery && (
+                        <span className="text-xs text-gray-500">
+                          {restaurant.menu
+                            .filter(menuItem => 
+                              menuItem.available && 
+                              (menuItem.name.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                               menuItem.category?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                               menuItem.description?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()))
+                            ).length} items found
+                        </span>
+                      )}
+                    </div>
+                    
+                    {/* Search Input */}
+                    <div className="mb-3 relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Search className="h-4 w-4 text-gray-400" />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Search by name, category, or description..."
+                        value={editOrderSearchQuery}
+                        onChange={(e) => setEditOrderSearchQuery(e.target.value)}
+                        className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        autoFocus
+                      />
+                      {editOrderSearchQuery && (
+                        <button
+                          onClick={() => setEditOrderSearchQuery('')}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                        >
+                          <X className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                        </button>
+                      )}
+                    </div>
+                    
+                    <div className="max-h-40 overflow-y-auto space-y-2">
+                      {restaurant.menu
+                        .filter(menuItem => 
+                          menuItem.available && 
+                          (menuItem.name.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                           menuItem.category?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                           menuItem.description?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()))
+                        )
+                        .map((menuItem) => (
+                        <div key={menuItem._id} className="flex items-center justify-between bg-white border border-gray-200 p-2 rounded-lg">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm">{menuItem.name}</div>
+                            <div className="text-xs text-gray-500">{menuItem.category}</div>
+                            <div className="text-xs text-gray-600">₹{menuItem.price}</div>
+                          </div>
+                          <button
+                            onClick={() => addItemToEditOrder(menuItem)}
+                            className="bg-blue-500 text-white px-3 py-1 rounded-lg hover:bg-blue-600 text-sm"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      ))}
+                      
+                      {/* No results message */}
+                      {restaurant.menu
+                        .filter(menuItem => 
+                          menuItem.available && 
+                          (menuItem.name.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                           menuItem.category?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()) ||
+                           menuItem.description?.toLowerCase().includes(editOrderSearchQuery.toLowerCase()))
+                        ).length === 0 && editOrderSearchQuery && (
+                        <div className="text-center py-4 text-gray-500 text-sm">
+                          No menu items found for "{editOrderSearchQuery}"
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Order Total */}
+                  <div className="border-t pt-4">
+                    <div className="flex justify-between items-center text-lg font-bold">
+                      <span>Total:</span>
+                      <span>₹{editingOrder.items.reduce((sum, item) => sum + (item.price * item.quantity), 0)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-4 mt-6 pt-6 border-t">
+                <button
+                  onClick={closeEditOrderModal}
+                  className="flex-1 bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600 font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveEditedOrder}
+                  className="flex-1 bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 font-semibold"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Table Payment Modal */}
+      {clearTableModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+
+            {!onlinePayStep ? (
+              <>
+                <h2 className="text-xl font-bold text-gray-800 mb-1">Clear Table {clearTableModal.tableNumber}</h2>
+                <p className="text-gray-500 text-sm mb-5">Select payment method to complete and clear this table.</p>
+
+                {/* Bill summary */}
+                <div className="bg-gray-50 rounded-xl p-4 mb-5 text-sm space-y-1">
+                  {(() => {
+                    const allItems = {};
+                    clearTableModal.tableOrders.forEach(order => {
+                      order.items.forEach(item => {
+                        if (allItems[item.name]) {
+                          allItems[item.name].quantity += item.quantity;
+                          allItems[item.name].total += item.price * item.quantity;
+                        } else {
+                          allItems[item.name] = { quantity: item.quantity, total: item.price * item.quantity };
+                        }
+                      });
+                    });
+                    return Object.entries(allItems).map(([name, d]) => (
+                      <div key={name} className="flex justify-between text-gray-600">
+                        <span>{name} × {d.quantity}</span>
+                        <span>₹{d.total}</span>
+                      </div>
+                    ));
+                  })()}
+                  <div className="border-t pt-2 flex justify-between font-bold text-gray-800 text-base">
+                    <span>Total</span>
+                    <span className="text-primary">₹{clearTableModal.totalAmount}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-3 mb-5">
+                  <button
+                    onClick={() => { setOnlinePayStep(true); setOnlinePayType('upi'); setUtrNumber(''); }}
+                    className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 rounded-xl hover:border-blue-400 hover:bg-blue-50 transition-all text-left"
+                  >
+                    <div>
+                      <div className="font-semibold text-gray-800">Online Payment</div>
+                      <div className="text-xs text-gray-500">UPI, Net Banking</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => confirmClearTable('cash', null, null)}
+                    className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 rounded-xl hover:border-green-400 hover:bg-green-50 transition-all text-left"
+                  >
+                    <div>
+                      <div className="font-semibold text-gray-800">Cash Payment</div>
+                      <div className="text-xs text-gray-500">Paid at table</div>
+                    </div>
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => { setClearTableModal(null); setOnlinePayStep(false); }}
+                  className="w-full py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setOnlinePayStep(false)}
+                  className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4"
+                >
+                  ← Back
+                </button>
+                <h2 className="text-xl font-bold text-gray-800 mb-1">Online Payment</h2>
+                <p className="text-gray-500 text-sm mb-5">Table {clearTableModal.tableNumber} · ₹{clearTableModal.totalAmount}</p>
+
+                {/* UPI / Net Banking toggle */}
+                <div className="flex gap-2 mb-5">
+                  {['upi', 'netbanking'].map(type => (
+                    <button
+                      key={type}
+                      onClick={() => setOnlinePayType(type)}
+                      className={`flex-1 py-2 rounded-lg text-sm font-semibold border-2 transition-all ${
+                        onlinePayType === type
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}
+                    >
+                      {type === 'upi' ? 'UPI' : 'Net Banking'}
+                    </button>
+                  ))}
+                </div>
+
+                {/* UTR Number (optional) */}
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    UTR / Reference Number <span className="text-gray-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={utrNumber}
+                    onChange={e => setUtrNumber(e.target.value)}
+                    placeholder="Enter UTR or transaction ID"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 text-sm"
+                  />
+                </div>
+
+                <button
+                  onClick={() => confirmClearTable('online', onlinePayType, utrNumber)}
+                  className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-xl font-bold hover:from-blue-600 hover:to-blue-700 transition-all mb-3"
+                >
+                  Confirm {onlinePayType === 'upi' ? 'UPI' : 'Net Banking'} Payment
+                </button>
+                <button
+                  onClick={() => { setClearTableModal(null); setOnlinePayStep(false); }}
+                  className="w-full py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl shadow-lg text-white text-sm font-medium flex items-center gap-2 transition-all animate-fade-in ${
+          toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'
+        }`}>
+          {toast.type === 'error' ? (
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          ) : (
+            <svg className="w-4 h-4 shrink-0 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+          )}
+          {toast.message}
+        </div>
+      )}
+
+      {shiftModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6">
+            <h3 className="font-bold text-gray-900 text-base mb-1">Shift {shiftModal.type === 'room' ? 'Room' : 'Table'}</h3>
+            <p className="text-xs text-gray-500 mb-4">Move orders from {shiftModal.type === 'room' ? 'Room' : 'Table'} {shiftModal.current} to:</p>
+            <div className="grid grid-cols-5 gap-2 mb-4 max-h-48 overflow-y-auto">
+              {Array.from({ length: shiftModal.type === 'room' ? (restaurant?.rooms || 0) : (restaurant?.tables || 0) }, (_, i) => i + 1)
+                .filter(n => n !== shiftModal.current)
+                .map(n => {
+                  const label = shiftModal.type === 'room' ? (restaurant?.features?.roomNames?.[n] || 'R'+n) : String(n);
+                  const isBusy = shiftModal.type === 'room'
+                    ? activeRoomOrders.some(o => parseInt(o.roomNumber) === n)
+                    : activeDineInOrders.some(o => parseInt(o.tableNumber) === n);
+                  return (
+                    <button key={n}
+                      onClick={async () => {
+                        try {
+                          const updateField = shiftModal.type === 'room'
+                            ? { orderType: 'room', roomNumber: String(n), tableNumber: null }
+                            : { orderType: 'dine-in', tableNumber: String(n), roomNumber: null };
+                          await Promise.all(shiftModal.orders.map(o => axios.patch(`/api/orders/${o._id}/shift`, updateField)));
+                          const restaurantId = localStorage.getItem('restaurantId');
+                          await fetchOrders(restaurantId);
+                          setShiftModal(null);
+                          setStaffView('tables');
+                          setStaffSelectedTable(null);
+                          setReceptionistOrder(prev => ({ ...prev, items: [], tableNumber: '', roomNumber: '', customerName: '', customerPhone: '', specialInstructions: '' }));
+                          showToast('Moved to ' + (shiftModal.type === 'room' ? 'Room' : 'Table') + ' ' + label);
+                        } catch(e) { showToast('Shift failed', 'error'); }
+                      }}
+                      className={"py-3 px-1 rounded-xl border-2 text-xs font-bold flex flex-col items-center gap-0.5 " + (isBusy ? 'border-red-200 bg-red-50 text-red-700' : 'border-green-200 bg-green-50 text-green-700 hover:border-green-400')}
+                    >
+                      <span>{label}</span>
+                      {isBusy && <span className="text-gray-400 font-normal">Busy</span>}
+                    </button>
+                  );
+                })}
+            </div>
+            <button onClick={() => setShiftModal(null)} className="w-full py-2 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Modal */}
+      {confirmModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-2">Confirm Action</h3>
+            <p className="text-gray-600 text-sm mb-6">{confirmModal.message}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-600 font-semibold hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmModal.onConfirm}
+                className="flex-1 py-2.5 rounded-xl bg-primary text-white font-semibold hover:bg-red-600 transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Navigation */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-30 pb-safe">
+        {[
+          { id: 'orders', label: 'Orders', icon: Package, badge: validOrders.filter(o => o.status !== 'completed' && o.status !== 'cancelled').length },
+          { id: 'inventory', label: 'Inventory', icon: Zap, badge: 0 },
+          { id: 'feedback', label: 'Feedback', icon: MessageSquare, badge: feedback.length },
+          { id: 'hub', label: 'To Hub', icon: Truck, badge: 0 },
+        ].map(tab => {
+          const Icon = tab.icon;
+          const active = activeBottomTab === tab.id;
+          return (
+            <button key={tab.id}
+              onClick={() => {
+                setActiveBottomTab(tab.id);
+                if (tab.id === 'orders') setActiveTab('Staff');
+                if (tab.id === 'feedback') setActiveTab('feedback');
+                if (tab.id === 'inventory') setActiveTab('menu');
+              }}
+              className={`flex-1 py-2.5 flex flex-col items-center gap-0.5 relative transition-colors ${active ? 'text-primary' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className="relative">
+                <Icon size={22} />
+                {tab.badge > 0 && (
+                  <span className="absolute -top-1.5 -right-2 bg-primary text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold leading-none">{tab.badge > 9 ? '9+' : tab.badge}</span>
+                )}
+              </div>
+              <span className="text-xs font-medium">{tab.label}</span>
+              {active && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-primary rounded-full" />}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Spacer for bottom nav */}
+      <div className="h-16" />
+    </div>
+  );
+}
