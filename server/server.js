@@ -37,6 +37,8 @@ const io = new Server(httpServer, {
 const allowedOrigins = process.env.NODE_ENV === 'production' 
   ? [
       'https://waitnot-restaurant.onrender.com',
+      'https://waitnot-restaurant1.onrender.com',
+      'https://testing-repo-waitnot.onrender.com',
       'https://waitnot-restaurant-app.vercel.app',
       'https://your-domain.com',
       'https://localhost',
