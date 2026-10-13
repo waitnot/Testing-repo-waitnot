@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const PRODUCTION_URL = 'https://waitnot-restaurant1.onrender.com';
+const PRODUCTION_URL = typeof window !== 'undefined' && window.location.hostname === 'testing-repo-waitnot.onrender.com'
+  ? 'https://testing-repo-waitnot.onrender.com'
+  : 'https://waitnot-restaurant1.onrender.com';
 
 const isDesktopApp = typeof window !== 'undefined' && window.navigator?.userAgent?.includes('Electron');
 const isCapacitorApp = typeof window !== 'undefined' && (
