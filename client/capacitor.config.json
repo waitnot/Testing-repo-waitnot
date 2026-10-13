@@ -1,0 +1,20 @@
+{
+  "appId": "com.waitnot.captain",
+  "appName": "WaitNot Captain",
+  "webDir": "dist-captain",
+  "bundledWebRuntime": false,
+  "server": {
+    "allowNavigation": [
+      "waitnot-restaurant1.onrender.com"
+    ],
+    "hostname": "localhost",
+    "iosScheme": "capacitor"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#EF4444",
+      "showSpinner": false
+    }
+  }
+}
