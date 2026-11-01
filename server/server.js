@@ -38,6 +38,8 @@ const ALLOWED_ORIGINS = [
   'https://www.waitnot.in',
   'https://waitnot-restaurant1.onrender.com',
   'https://testing-repo-waitnot.onrender.com',
+  // Domain India App Platform
+  'https://dom-waintot-f10ecd.run.colosoft.com',
   // Capacitor / mobile
   'capacitor://localhost',
   'ionic://localhost',
@@ -51,7 +53,9 @@ app.use(cors({
     if (!origin) return callback(null, true); // curl / server-side
     if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) return callback(null, true);
     if (origin.startsWith('capacitor://') || origin.startsWith('ionic://')) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin) || origin.includes('vercel.app') || origin.includes('domainindiaapps.com')) return callback(null, true);
+    // Same-origin requests from the deployed app itself (colosoft, domainindiaapps, etc.)
+    if (origin.includes('colosoft.com') || origin.includes('domainindiaapps.com')) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin) || origin.includes('vercel.app')) return callback(null, true);
     console.log('❌ CORS blocked:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
@@ -107,6 +111,16 @@ if (process.env.NODE_ENV === 'production') {
     etag: true,
   }));
 
+  // Fonts — long cache, correct MIME
+  app.use('/fonts', express.static(path.join(distPath, 'fonts'), {
+    maxAge: '1y',
+    immutable: true,
+    etag: true,
+  }));
+
+  // Static assets (icons, manifest, sounds) — short cache
+  app.use('/sounds', express.static(path.join(distPath, 'sounds'), { maxAge: '1d' }));
+
   // Everything else (index.html, favicon, manifest) — no-cache so browser always gets fresh HTML
   app.use(express.static(distPath, {
     maxAge: 0,
@@ -124,7 +138,12 @@ if (process.env.NODE_ENV === 'production') {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.sendFile(path.join(distPath, 'index.html'));
+    res.sendFile(path.join(distPath, 'index.html'), (err) => {
+      if (err) {
+        console.error('❌ Failed to send index.html:', err.message, 'for URL:', req.url);
+        res.status(500).json({ error: 'Failed to load app', url: req.url });
+      }
+    });
   });
 }
 
