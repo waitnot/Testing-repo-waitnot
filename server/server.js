@@ -100,8 +100,32 @@ if (process.env.NODE_ENV === 'production') {
   console.log('📁 distPath:', distPath);
   console.log('📁 index.html exists:', fs.existsSync(path.join(distPath, 'index.html')));
 
-  app.use(express.static(distPath, { maxAge: '1d', etag: true }));
-  app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
+  // Hashed assets (/assets/*.js, /assets/*.css) — cache 1 year (content-addressed)
+  app.use('/assets', express.static(path.join(distPath, 'assets'), {
+    maxAge: '1y',
+    immutable: true,
+    etag: true,
+  }));
+
+  // Everything else (index.html, favicon, manifest) — no-cache so browser always gets fresh HTML
+  app.use(express.static(distPath, {
+    maxAge: 0,
+    etag: true,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  }));
+
+  app.get('*', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
 }
 
 // ── Socket.IO ─────────────────────────────────────────────────────────────────
