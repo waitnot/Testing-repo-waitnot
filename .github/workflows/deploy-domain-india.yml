@@ -1,0 +1,87 @@
+name: Deploy to Domain India
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build deployment archive
+        run: |
+          python3 - << 'PYEOF'
+          import os, tarfile, io, time
+
+          SRC = "."
+          OUT = "/tmp/deploy.tar.gz"
+
+          SKIP_DIRS = {
+              'node_modules', '.git', 'dist-captain', 'dist-desktop', 'build',
+              '.gradle_home', 'apks', 'sign_work', 'restaurant-app',
+              'WaitNot-Captain-Latest', '__pycache__', 'ios', 'android',
+              'bluetooth-printer-app', 'waitnot-captain-ios',
+              'waitnot-restaurant-fresh', '.idea', '.vscode', 'dist'
+          }
+
+          SKIP_EXTS = {'.apk', '.ipa', '.keystore', '.jks', '.p12', '.cer'}
+
+          count = 0
+          with tarfile.open(OUT, "w:gz") as tar:
+              for root, dirs, files in os.walk(SRC):
+                  dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+                  for f in files:
+                      if any(f.endswith(ext) for ext in SKIP_EXTS):
+                          continue
+                      if f.startswith('.DS_Store'):
+                          continue
+                      full = os.path.join(root, f)
+                      rel = os.path.relpath(full, SRC)
+                      try:
+                          data = open(full, 'rb').read()
+                          info = tarfile.TarInfo(name=rel)
+                          info.size = len(data)
+                          info.mtime = time.time()
+                          tar.addfile(info, io.BytesIO(data))
+                          count += 1
+                      except Exception:
+                          pass
+
+          size_mb = os.path.getsize(OUT) / (1024 * 1024)
+          print(f"Archive: {count} files, {size_mb:.1f} MB -> {OUT}")
+          PYEOF
+
+      - name: Deploy to Domain India
+        run: |
+          echo "Deploying to Domain India App Platform..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://deploy.colosoft.com/deploy/dom-waintot-f10ecd" \
+            -H "Authorization: Bearer ${{ secrets.DOMAIN_INDIA_DEPLOY_TOKEN }}" \
+            -H "Content-Type: application/gzip" \
+            --data-binary @/tmp/deploy.tar.gz \
+            --max-time 300)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Deploy failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "Deploy successful!"
+          echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Duration:', d.get('durationMs','?'), 'ms')" 2>/dev/null || true
