@@ -1,8 +1,8 @@
 {
   "name": "waitnot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
-  "description": "Restaurant Discovery & Smart Ordering System",
+  "description": "WaitNot — Restaurant Management System",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "cd server && npm run dev",
@@ -11,18 +11,13 @@
     "build": "cd server && npm install && cd ../client && npm install && npm run build",
     "start": "cd server && npm start",
     "render-build": "cd server && npm install && cd ../client && npm install && npm run build",
-    "desktop:install": "cd desktop && npm install",
-    "desktop:dev": "concurrently \"npm run server\" \"npm run client\" \"wait-on http://localhost:3000 && cd desktop && npm run dev\"",
-    "desktop:build": "npm run build && cd desktop && npm install && npm run build",
-    "desktop:build:win": "npm run build && cd desktop && npm install && npm run build:win",
-    "desktop:build:mac": "npm run build && cd desktop && npm install && npm run build:mac"
+    "domain-india-build": "cd server && npm install && cd ../client && npm install && npm run build"
   },
-  "keywords": [
-    "restaurant",
-    "ordering",
-    "pos"
-  ],
-  "author": "",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["restaurant", "ordering", "pos", "qr-menu"],
+  "author": "WaitNot Technologies",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2",

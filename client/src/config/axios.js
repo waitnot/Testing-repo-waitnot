@@ -1,6 +1,17 @@
 import axios from 'axios';
 
-const PRODUCTION_URL = 'https://waitnot-restaurant1.onrender.com';
+// Auto-detect API base URL based on where the app is running
+const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+let baseURL;
+if (hostname === 'localhost' || hostname === '127.0.0.1') {
+  // Local dev: use local server on port 5001
+  baseURL = 'http://localhost:5001';
+} else {
+  // Deployed (Render, Domain India, Vercel, etc.): use same origin — server serves both API and client
+  baseURL = origin;
+}
 
 const isDesktopApp = typeof window !== 'undefined' && window.navigator?.userAgent?.includes('Electron');
 const isCapacitorApp = typeof window !== 'undefined' && (
@@ -8,24 +19,22 @@ const isCapacitorApp = typeof window !== 'undefined' && (
   window.location?.protocol === 'capacitor:'
 );
 
-// True dev = running on localhost in a browser (not native app)
-const isLocalDev = typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
-  !isDesktopApp && !isCapacitorApp;
+// Native apps need a full URL since they don't have a web origin
+if (isCapacitorApp) {
+  baseURL = 'https://waitnot-restaurant1.onrender.com';
+}
+if (isDesktopApp) {
+  baseURL = 'https://waitnot-restaurant1.onrender.com';
+}
 
-// Local dev: use local server directly (port 5001) — avoids any proxy or CORS issues
-// Native apps: use production
-// Deployed web: use production
-const baseURL = isLocalDev
-  ? 'http://localhost:5001'
-  : PRODUCTION_URL;
+const isLocalDev = (hostname === 'localhost' || hostname === '127.0.0.1') && !isDesktopApp && !isCapacitorApp;
 
 console.log('🔧 Axios baseURL:', baseURL);
 
 // Create axios instance with optimized defaults
 const axiosInstance = axios.create({
   baseURL,
-  timeout: 30000, // 30s — handles Neon cold start (~5-8s)
+  timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -34,7 +43,6 @@ axiosInstance.interceptors.request.use(
     if (isLocalDev) {
       console.log('📤 API Request:', config.method?.toUpperCase(), config.url);
     }
-    // Only set token if not already set (staff pages set their own token on axios.defaults)
     if (!config.headers.Authorization) {
       const token = localStorage.getItem('staffToken') || localStorage.getItem('restaurantToken') || localStorage.getItem('adminToken');
       if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -76,9 +84,9 @@ axiosInstance.interceptors.response.use(
 axios.defaults.baseURL = baseURL;
 axios.defaults.timeout = 30000;
 
-// Wake up Render server immediately on app load (free tier sleeps after inactivity)
-if (!isLocalDev) {
-  fetch(`${PRODUCTION_URL}/health`).catch(() => {});
+// Wake up server on app load (for cold-start prone platforms like Render free tier)
+if (!isLocalDev && !isCapacitorApp && !isDesktopApp) {
+  fetch(`${baseURL}/health`).catch(() => {});
 }
 
 export default axiosInstance;

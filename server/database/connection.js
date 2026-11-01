@@ -197,6 +197,24 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_order_archives_restaurant ON order_archives(restaurant_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_invoice ON orders(restaurant_id, invoice_number)`);
 
+    // ── Menu display_order & Domain India migrations ───────────────────────────
+    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS available BOOLEAN DEFAULT true`);
+    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS rooms INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS logo TEXT`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS room_number INTEGER`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'direct'`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS special_instructions TEXT`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_order_id VARCHAR(255)`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_fee DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission_rate DECIMAL(5,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS net_amount DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS estimated_delivery_time INTEGER`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS packaging_charge DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_charge DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) DEFAULT 0`);
+
     // Create staff tables
     await client.query(`
       CREATE TABLE IF NOT EXISTS staff (
