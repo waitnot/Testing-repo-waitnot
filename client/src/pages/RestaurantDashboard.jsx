@@ -3088,7 +3088,7 @@ export default function RestaurantDashboard() {
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
                 {Array.from({ length: restaurant.tables || 0 }, (_, i) => i + 1).map((tableNum) => {
                   // Force production domain for QR codes
-                  const qrUrl = `https://waitnot-restaurant.onrender.com/qr/${restaurant._id}/${tableNum}`;
+                  const qrUrl = `${getFrontendUrl()}/qr/${restaurant._id}/${tableNum}`;
                   return (
                     <div key={tableNum} className="bg-white rounded-lg shadow-md p-4 text-center relative">
                       {/* Delete Button */}
@@ -3176,7 +3176,7 @@ export default function RestaurantDashboard() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
                   {Array.from({ length: restaurant.rooms || 0 }, (_, i) => i + 1).map((roomNum) => {
-                    const qrUrl = `https://waitnot-restaurant.onrender.com/qr-room/${restaurant._id}/${roomNum}`;
+                    const qrUrl = `${getFrontendUrl()}/qr-room/${restaurant._id}/${roomNum}`;
                     const roomName = restaurant.features?.roomNames?.[roomNum] || `Room ${roomNum}`;
                     const isEditingThis = editingRoomName?.roomNum === roomNum;
                     return (
@@ -3272,7 +3272,7 @@ export default function RestaurantDashboard() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                 {/* Takeaway QR */}
                 {(() => {
-                  const twUrl = `https://waitnot-restaurant.onrender.com/qr-takeaway/${restaurant._id}`;
+                  const twUrl = `${getFrontendUrl()}/qr-takeaway/${restaurant._id}`;
                   return (
                     <div className="bg-white rounded-lg shadow-md p-6 text-center border-t-4 border-orange-400">
                       <div className="text-3xl mb-2">🥡</div>
@@ -3316,7 +3316,7 @@ export default function RestaurantDashboard() {
 
                 {/* Delivery QR */}
                 {(() => {
-                  const delUrl = `https://waitnot-restaurant.onrender.com/qr-delivery/${restaurant._id}`;
+                  const delUrl = `${getFrontendUrl()}/qr-delivery/${restaurant._id}`;
                   return (
                     <div className="bg-white rounded-lg shadow-md p-6 text-center border-t-4 border-blue-400">
                       <div className="text-3xl mb-2">🛵</div>

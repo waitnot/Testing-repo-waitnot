@@ -4,7 +4,18 @@ import { Users, Lock, Mail, Eye, EyeOff } from 'lucide-react';
 import axios from '../config/axios.js';
 import { secureSet, secureRemove } from '../utils/secureStorage.js';
 
-const PRODUCTION_URL = 'https://waitnot-restaurant1.onrender.com';
+// Resolve server URL dynamically — avoids hardcoded Render URL on Domain India / web deployments
+const _isCapacitor = typeof window !== 'undefined' && (
+  window.Capacitor?.isNativePlatform?.() || window.location?.protocol === 'capacitor:'
+);
+const _isLocalDev = typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+  !_isCapacitor;
+const SERVER_URL = _isCapacitor
+  ? 'https://waitnot-restaurant1.onrender.com'
+  : _isLocalDev
+    ? 'http://localhost:5001'
+    : window.location.origin;
 
 export default function StaffLogin() {
   const navigate = useNavigate();
@@ -34,12 +45,12 @@ export default function StaffLogin() {
 
     const ping = async () => {
       try {
-        const res = await fetchWithTimeout(`${PRODUCTION_URL}/health`, 5000);
+        const res = await fetchWithTimeout(`${SERVER_URL}/health`, 5000);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (err) {
         if (!cancelled) setServerWaking(true);
         try {
-          await fetchWithTimeout(`${PRODUCTION_URL}/health`, 60000);
+          await fetchWithTimeout(`${SERVER_URL}/health`, 60000);
         } catch (_) {}
         if (!cancelled) setServerWaking(false);
       }

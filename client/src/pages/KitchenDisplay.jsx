@@ -8,7 +8,7 @@ import axios from 'axios';
 import io from 'socket.io-client';
 import { secureGet } from '../utils/secureStorage.js';
 
-// ─── API URL (mirrors StaffDashboard) ────────────────────────────────────────
+// ─── API URL ─────────────────────────────────────────────────────────────────
 const PRODUCTION_URL = 'https://waitnot-restaurant1.onrender.com';
 const _isCapacitor = typeof window !== 'undefined' && (
   window.Capacitor?.isNativePlatform?.() ||
@@ -17,15 +17,12 @@ const _isCapacitor = typeof window !== 'undefined' && (
 const _isLocalDev = typeof window !== 'undefined' &&
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
   !_isCapacitor;
-// On the testing service, point to itself
-const _testingHost = typeof window !== 'undefined' && window.location.hostname === 'testing-repo-waitnot.onrender.com';
+// For web deployments, use same origin (works on Render, Domain India, any host)
 const API = _isCapacitor
   ? PRODUCTION_URL
-  : _testingHost
-    ? 'https://testing-repo-waitnot.onrender.com'
-    : _isLocalDev
-      ? 'http://localhost:5001'
-      : '';
+  : _isLocalDev
+    ? 'http://localhost:5001'
+    : '';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const TABS = [
