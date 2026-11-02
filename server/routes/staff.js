@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../database/connection.js';
+import { JWT_SECRET, auditLog } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -47,7 +48,7 @@ const verifyStaffToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Access denied. No token provided.' });
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, JWT_SECRET);
     
     // Check if session is still valid
     const sessionResult = await query(
@@ -231,7 +232,7 @@ router.post('/login', async (req, res) => {
     // Generate JWT token
     const token = jwt.sign(
       { staffId: staff.id, restaurantId: staff.restaurant_id },
-      process.env.JWT_SECRET || 'your-secret-key',
+      JWT_SECRET,
       { expiresIn: '30d' }
     );
     

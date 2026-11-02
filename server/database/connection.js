@@ -164,24 +164,42 @@ export async function initDatabase() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)');
 
-    // Migration: ensure all restaurants have staffManagement, staffOrders, deliveryOrders in features
+    // Migration: add features column if missing, then set defaults
+    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS features JSONB DEFAULT '{}'::jsonb`);
     await client.query(`
       UPDATE restaurants
-      SET features = features
+      SET features = COALESCE(features, '{}'::jsonb)
         || '{"staffManagement": true}'::jsonb
         || '{"staffOrders": true}'::jsonb
         || '{"deliveryOrders": true}'::jsonb
-      WHERE NOT (features ? 'staffManagement')
+      WHERE features IS NULL
+         OR NOT (features ? 'staffManagement')
          OR NOT (features ? 'staffOrders')
          OR NOT (features ? 'deliveryOrders')
     `);
 
     // ── Invoice / Archive migrations ──────────────────────────────────────────
-    // invoice_number: sequential per-restaurant, human-readable, reset-able
     await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_number INTEGER`);
-    // archived: soft-delete flag (order removed from active list but kept for reports)
     await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT false`);
     await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE`);
+
+    // ── Menu display_order migration ──────────────────────────────────────────
+    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS available BOOLEAN DEFAULT true`);
+    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS rooms INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS logo TEXT`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS room_number INTEGER`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'direct'`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS special_instructions TEXT`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_order_id VARCHAR(255)`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_fee DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission_rate DECIMAL(5,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS net_amount DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS estimated_delivery_time INTEGER`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS packaging_charge DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_charge DECIMAL(10,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) DEFAULT 0`);
     // invoice_counter: track the last used invoice number per restaurant so resets are clean
     await client.query(`
       CREATE TABLE IF NOT EXISTS invoice_counters (
@@ -205,24 +223,6 @@ export async function initDatabase() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_order_archives_restaurant ON order_archives(restaurant_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_invoice ON orders(restaurant_id, invoice_number)`);
-
-    // ── Menu display_order & Domain India migrations ───────────────────────────
-    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0`);
-    await client.query(`ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS available BOOLEAN DEFAULT true`);
-    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS rooms INTEGER DEFAULT 0`);
-    await client.query(`ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS logo TEXT`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS room_number INTEGER`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'direct'`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS special_instructions TEXT`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_order_id VARCHAR(255)`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_fee DECIMAL(10,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission DECIMAL(10,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission_rate DECIMAL(5,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS net_amount DECIMAL(10,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS estimated_delivery_time INTEGER`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS packaging_charge DECIMAL(10,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_charge DECIMAL(10,2) DEFAULT 0`);
-    await client.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) DEFAULT 0`);
 
     // Create staff tables
     await client.query(`
@@ -281,6 +281,114 @@ export async function initDatabase() {
       )
     `);
     await client.query('CREATE INDEX IF NOT EXISTS idx_printer_settings_restaurant_id ON printer_settings(restaurant_id)');
+
+    // ── Phase 2: Staff username + PIN auth ───────────────────────────────────
+    // Add username column to staff (nullable for backward compat)
+    await client.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS username VARCHAR(50)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_username ON staff(username) WHERE username IS NOT NULL`);
+
+    // Staff PIN credentials (hashed with bcrypt, never plaintext)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS staff_pins (
+        id SERIAL PRIMARY KEY,
+        staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+        restaurant_id VARCHAR(255) NOT NULL,
+        pin_hash VARCHAR(255) NOT NULL,
+        failed_attempts INTEGER DEFAULT 0,
+        locked_until TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(staff_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_staff_pins_staff_id ON staff_pins(staff_id)`);
+
+    // ── Phase 3: WebAuthn / Passkeys ─────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS webauthn_credentials (
+        id SERIAL PRIMARY KEY,
+        staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+        restaurant_id VARCHAR(255) NOT NULL,
+        credential_id TEXT UNIQUE NOT NULL,
+        public_key TEXT NOT NULL,
+        counter BIGINT DEFAULT 0,
+        device_name VARCHAR(100) DEFAULT 'My Device',
+        aaguid VARCHAR(36),
+        transports JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_used TIMESTAMP WITH TIME ZONE
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_webauthn_staff_id ON webauthn_credentials(staff_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_webauthn_credential_id ON webauthn_credentials(credential_id)`);
+
+    // WebAuthn challenge store (short-lived, cleaned up after use)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS webauthn_challenges (
+        id SERIAL PRIMARY KEY,
+        staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+        challenge TEXT NOT NULL,
+        type VARCHAR(20) NOT NULL,
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // ── Phase 4: Trusted devices ─────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trusted_devices (
+        id SERIAL PRIMARY KEY,
+        staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+        restaurant_id VARCHAR(255) NOT NULL,
+        device_fingerprint VARCHAR(255) NOT NULL,
+        device_name VARCHAR(100),
+        device_type VARCHAR(50),
+        last_login TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_active TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        is_trusted BOOLEAN DEFAULT true,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_trusted_devices_staff_id ON trusted_devices(staff_id)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_trusted_devices_fp ON trusted_devices(staff_id, device_fingerprint)`);
+
+    // ── Phase 5: Refresh tokens ──────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id SERIAL PRIMARY KEY,
+        staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+        token_hash VARCHAR(255) UNIQUE NOT NULL,
+        device_name VARCHAR(100),
+        ip_address VARCHAR(45),
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        used_at TIMESTAMP WITH TIME ZONE,
+        revoked BOOLEAN DEFAULT false,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_staff_id ON refresh_tokens(staff_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash)`);
+
+    // ── Phase 6: Login audit log ─────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS login_audit_log (
+        id SERIAL PRIMARY KEY,
+        entity_type VARCHAR(20) NOT NULL,
+        entity_id VARCHAR(255) NOT NULL,
+        action VARCHAR(50) NOT NULL,
+        restaurant_id VARCHAR(255),
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        session_id VARCHAR(255),
+        success BOOLEAN NOT NULL DEFAULT true,
+        failure_reason VARCHAR(100),
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_audit_entity ON login_audit_log(entity_type, entity_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_audit_restaurant ON login_audit_log(restaurant_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_audit_created ON login_audit_log(created_at)`);
 
     client.release();
     console.log('✅ Database tables created successfully');

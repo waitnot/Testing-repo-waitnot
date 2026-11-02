@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Lock, Mail, Eye, EyeOff } from 'lucide-react';
+import { Users, Lock, Mail, Eye, EyeOff, Keyboard } from 'lucide-react';
 import axios from '../config/axios.js';
 import { secureSet, secureRemove } from '../utils/secureStorage.js';
 
@@ -188,6 +188,13 @@ export default function StaffLogin() {
           </form>
 
           <div className="mt-6 text-center space-y-2">
+            <button
+              onClick={() => navigate('/staff-pin-login')}
+              className="w-full flex items-center justify-center gap-2 text-sm font-medium text-gray-600 hover:text-red-600 border border-gray-200 rounded-lg py-2.5 transition-colors"
+            >
+              <Keyboard className="w-4 h-4" />
+              Login with PIN instead
+            </button>
             <button
               onClick={() => navigate('/restaurant-login')}
               className="text-primary hover:text-primary-dark text-sm font-medium"

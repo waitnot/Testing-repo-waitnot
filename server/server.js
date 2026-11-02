@@ -24,6 +24,7 @@ import staffRoutes from './routes/staff.js';
 import deviceRoutes from './routes/devices.js';
 import appVersionRoutes from './routes/appVersion.js';
 import kitchenRoutes from './routes/kitchen.js';
+import pinRoutes from './routes/pin.js';
 
 dotenv.config();
 
@@ -38,8 +39,6 @@ const ALLOWED_ORIGINS = [
   'https://www.waitnot.in',
   'https://waitnot-restaurant1.onrender.com',
   'https://testing-repo-waitnot.onrender.com',
-  // Domain India App Platform
-  'https://dom-waintot-f10ecd.run.colosoft.com',
   // Capacitor / mobile
   'capacitor://localhost',
   'ionic://localhost',
@@ -53,9 +52,7 @@ app.use(cors({
     if (!origin) return callback(null, true); // curl / server-side
     if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) return callback(null, true);
     if (origin.startsWith('capacitor://') || origin.startsWith('ionic://')) return callback(null, true);
-    // Same-origin requests from the deployed app itself (colosoft, domainindiaapps, etc.)
-    if (origin.includes('colosoft.com') || origin.includes('domainindiaapps.com')) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin) || origin.includes('vercel.app')) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin) || origin.includes('vercel.app') || origin.includes('domainindiaapps.com')) return callback(null, true);
     console.log('❌ CORS blocked:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
@@ -94,11 +91,10 @@ app.use('/api/staff', staffRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/app-version', appVersionRoutes);
 app.use('/api/kitchen', kitchenRoutes);
+app.use('/api/pin', pinRoutes);
 
 // ── Serve React build ─────────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
-  // __dirname = /app/server (Procfile: web: node server/server.js)
-  // client/dist = /app/client/dist  →  __dirname + '/../client/dist'
   const distPath = path.resolve(__dirname, '../client/dist');
   console.log('📁 __dirname:', __dirname);
   console.log('📁 distPath:', distPath);
@@ -118,7 +114,7 @@ if (process.env.NODE_ENV === 'production') {
     etag: true,
   }));
 
-  // Static assets (icons, manifest, sounds) — short cache
+  // Static assets (sounds, etc.) — short cache
   app.use('/sounds', express.static(path.join(distPath, 'sounds'), { maxAge: '1d' }));
 
   // Everything else (index.html, favicon, manifest) — no-cache so browser always gets fresh HTML

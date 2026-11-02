@@ -7,7 +7,7 @@ import { query } from '../database/connection.js';
 const router = express.Router();
 
 // Admin login
-router.post('/login', async (req, res) => {
+router.post('/login', rateLimit, async (req, res) => {
   try {
     console.log('Admin login attempt:', req.body.username || req.body.email);
     
@@ -33,7 +33,7 @@ router.post('/login', async (req, res) => {
     
     const token = jwt.sign(
       { id: admin._id, role: 'admin' },
-      process.env.JWT_SECRET || 'admin_secret',
+      JWT_SECRET,
       { expiresIn: '24h' }
     );
     
@@ -59,7 +59,7 @@ router.post('/restaurants', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -94,7 +94,7 @@ router.get('/restaurants', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -132,7 +132,7 @@ router.delete('/restaurants/:id', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'Admin authentication required' });
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      decoded = jwt.verify(token, JWT_SECRET);
     } catch { return res.status(401).json({ error: 'Invalid admin token' }); }
     if (decoded.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
 
@@ -170,7 +170,7 @@ router.post('/restaurants/:id/reset-password', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'Admin authentication required' });
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      decoded = jwt.verify(token, JWT_SECRET);
     } catch { return res.status(401).json({ error: 'Invalid admin token' }); }
     if (decoded.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
 
@@ -201,7 +201,7 @@ router.post('/restaurants/:id/reset-email', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'Admin authentication required' });
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      decoded = jwt.verify(token, JWT_SECRET);
     } catch { return res.status(401).json({ error: 'Invalid admin token' }); }
     if (decoded.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
 
@@ -239,7 +239,7 @@ router.put('/restaurants/:id', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -270,7 +270,7 @@ router.get('/restaurants/:id/features', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -313,7 +313,7 @@ router.put('/restaurants/:id/features', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -359,7 +359,7 @@ router.put('/restaurants/:id/qr-ordering', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -409,7 +409,7 @@ router.get('/stats', async (req, res) => {
     }
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.role !== 'admin') {
         return res.status(403).json({ error: 'Admin access required' });
       }
@@ -446,7 +446,7 @@ router.get('/recent-orders', async (req, res) => {
     }
 
     try {
-      jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+      jwt.verify(token, JWT_SECRET);
     } catch (error) {
       return res.status(401).json({ error: 'Invalid token' });
     }
@@ -490,7 +490,7 @@ router.put('/credentials', async (req, res) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) return res.status(401).json({ error: 'Authentication required' });
     let decoded;
-    try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret'); } 
+    try { decoded = jwt.verify(token, JWT_SECRET); } 
     catch { return res.status(401).json({ error: 'Invalid token' }); }
 
     const { email, password } = req.body;
@@ -514,7 +514,7 @@ router.put('/update-credentials', async (req, res) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) return res.status(401).json({ error: 'Authentication required' });
     let decoded;
-    try { decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret'); } 
+    try { decoded = jwt.verify(token, JWT_SECRET); } 
     catch { return res.status(401).json({ error: 'Invalid token' }); }
 
     const { email, password } = req.body;
