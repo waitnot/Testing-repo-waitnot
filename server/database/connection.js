@@ -390,6 +390,31 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_audit_restaurant ON login_audit_log(restaurant_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_audit_created ON login_audit_log(created_at)`);
 
+    // ── Phase 7: Admin TOTP (2FA) ────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admin_totp (
+        id SERIAL PRIMARY KEY,
+        admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+        secret_encrypted TEXT NOT NULL,
+        is_active BOOLEAN DEFAULT false,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        activated_at TIMESTAMP WITH TIME ZONE,
+        UNIQUE(admin_id)
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+        id SERIAL PRIMARY KEY,
+        admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+        code_hash VARCHAR(255) NOT NULL,
+        used BOOLEAN DEFAULT false,
+        used_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_admin_totp_admin ON admin_totp(admin_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recovery_codes_admin ON admin_recovery_codes(admin_id)`);
+
     client.release();
     console.log('✅ Database tables created successfully');
     

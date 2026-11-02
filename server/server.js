@@ -25,6 +25,9 @@ import deviceRoutes from './routes/devices.js';
 import appVersionRoutes from './routes/appVersion.js';
 import kitchenRoutes from './routes/kitchen.js';
 import pinRoutes from './routes/pin.js';
+import webauthnRoutes from './routes/webauthn.js';
+import deviceMgmtRoutes from './routes/deviceManagement.js';
+import totpRoutes from './routes/totp.js';
 
 dotenv.config();
 
@@ -92,6 +95,9 @@ app.use('/api/devices', deviceRoutes);
 app.use('/api/app-version', appVersionRoutes);
 app.use('/api/kitchen', kitchenRoutes);
 app.use('/api/pin', pinRoutes);
+app.use('/api/webauthn', webauthnRoutes);
+app.use('/api/device-mgmt', deviceMgmtRoutes);
+app.use('/api/totp', totpRoutes);
 
 // ── Serve React build ─────────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {

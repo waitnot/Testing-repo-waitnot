@@ -32,6 +32,13 @@ const AdminDashboard = () => {
 
   // Credentials edit state
   const [credForm, setCredForm] = useState({ email: '', password: '', confirmPassword: '' });
+  // TOTP 2FA state
+  const [totpStatus, setTotpStatus] = useState({ enabled: false, activatedAt: null, recoveryCodesRemaining: 0 });
+  const [totpSetup, setTotpSetup] = useState(null);  // { qrCodeDataUrl, manualKey }
+  const [totpCode, setTotpCode] = useState('');
+  const [totpRecoveryCodes, setTotpRecoveryCodes] = useState([]);
+  const [totpMsg, setTotpMsg] = useState(null);
+  const [totpLoading, setTotpLoading] = useState(false);
   const [credLoading, setCredLoading] = useState(false);
   const [credMessage, setCredMessage] = useState(null);
 
@@ -294,6 +301,67 @@ const AdminDashboard = () => {
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminData');
     navigate('/admin-login');
+  };
+
+  const fetchTotpStatus = async () => {
+    try {
+      const token = localStorage.getItem('adminToken');
+      const res = await fetch('/api/totp/status', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setTotpStatus(await res.json());
+    } catch (_) {}
+  };
+
+  const startTotpSetup = async () => {
+    setTotpLoading(true); setTotpMsg(null);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const res = await fetch('/api/totp/setup', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setTotpSetup(data);
+    } catch (e) { setTotpMsg({ type: 'error', text: e.message }); }
+    finally { setTotpLoading(false); }
+  };
+
+  const verifyTotpSetup = async () => {
+    if (!totpCode || totpCode.length !== 6) return;
+    setTotpLoading(true); setTotpMsg(null);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const res = await fetch('/api/totp/verify-setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: totpCode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setTotpRecoveryCodes(data.recoveryCodes);
+      setTotpSetup(null);
+      setTotpCode('');
+      await fetchTotpStatus();
+      setTotpMsg({ type: 'success', text: '2FA enabled successfully!' });
+    } catch (e) { setTotpMsg({ type: 'error', text: e.message }); }
+    finally { setTotpLoading(false); }
+  };
+
+  const disableTotp = async () => {
+    const code = prompt('Enter your current TOTP code to disable 2FA:');
+    if (!code) return;
+    setTotpLoading(true);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const res = await fetch('/api/totp/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setTotpMsg({ type: 'success', text: '2FA disabled.' });
+      setTotpRecoveryCodes([]);
+      await fetchTotpStatus();
+    } catch (e) { setTotpMsg({ type: 'error', text: e.message }); }
+    finally { setTotpLoading(false); }
   };
 
   const filteredRestaurants = restaurants.filter(restaurant =>
@@ -757,6 +825,54 @@ const AdminDashboard = () => {
                   {credLoading ? 'Updating...' : 'Update Credentials'}
                 </button>
               </form>
+            </div>
+
+            {/* 2FA Section */}
+            <div className="bg-white rounded-lg shadow p-6 mt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900">Two-Factor Authentication (2FA)</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {totpStatus.enabled ? `Active since ${new Date(totpStatus.activatedAt).toLocaleDateString()}` : 'Add an extra layer of security to your account'}
+                  </p>
+                </div>
+                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${totpStatus.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {totpStatus.enabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </div>
+              {totpMsg && (
+                <div className={`mb-4 px-4 py-3 rounded-lg text-sm ${totpMsg.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>{totpMsg.text}</div>
+              )}
+              {totpRecoveryCodes.length > 0 && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <p className="text-sm font-semibold text-amber-800 mb-2">Save these recovery codes — shown only once</p>
+                  <div className="grid grid-cols-2 gap-2">{totpRecoveryCodes.map((c,i) => <code key={i} className="text-xs font-mono bg-white border px-2 py-1 rounded">{c}</code>)}</div>
+                  <button onClick={() => setTotpRecoveryCodes([])} className="mt-3 text-xs text-amber-600 underline">I have saved these codes</button>
+                </div>
+              )}
+              {!totpStatus.enabled && !totpSetup && (
+                <button onClick={startTotpSetup} disabled={totpLoading} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                  {totpLoading ? 'Loading...' : 'Enable 2FA'}
+                </button>
+              )}
+              {!totpStatus.enabled && totpSetup && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">Scan this QR code with Google Authenticator or Authy:</p>
+                  <img src={totpSetup.qrCodeDataUrl} alt="TOTP QR Code" className="w-48 h-48 border rounded-lg" />
+                  <div><p className="text-xs text-gray-400 mb-1">Or enter manually:</p><code className="text-xs font-mono bg-gray-100 px-2 py-1 rounded break-all">{totpSetup.manualKey}</code></div>
+                  <div className="flex gap-2 items-center">
+                    <input type="text" inputMode="numeric" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/[^0-9]/g,'').slice(0,6))} placeholder="6-digit code" maxLength={6} className="px-3 py-2 border rounded-lg text-sm w-40 font-mono tracking-widest" />
+                    <button onClick={verifyTotpSetup} disabled={totpLoading || totpCode.length !== 6} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">{totpLoading ? 'Verifying...' : 'Verify & Activate'}</button>
+                    <button onClick={() => { setTotpSetup(null); setTotpCode(''); }} className="text-sm text-gray-400 hover:text-gray-600">Cancel</button>
+                  </div>
+                </div>
+              )}
+              {totpStatus.enabled && (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-600">Recovery codes remaining: <strong>{totpStatus.recoveryCodesRemaining}</strong>{totpStatus.recoveryCodesRemaining <= 2 && <span className="text-amber-600 ml-2">Running low</span>}</p>
+                  <button onClick={disableTotp} disabled={totpLoading} className="px-4 py-2 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 disabled:opacity-50">Disable 2FA</button>
+                </div>
+              )}
             </div>
           </div>
         )}
