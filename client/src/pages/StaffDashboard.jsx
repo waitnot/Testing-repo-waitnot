@@ -48,6 +48,12 @@ const _isLocalDev = typeof window !== 'undefined' &&
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
   !_isCapacitor;
 const API = _isCapacitor ? PRODUCTION_URL : (_isLocalDev ? 'http://localhost:5001' : '');
+// Socket.IO needs an explicit URL — empty string doesn't connect reliably
+const SOCKET_URL = _isCapacitor
+  ? PRODUCTION_URL
+  : _isLocalDev
+    ? 'http://localhost:5001'
+    : window.location.origin;
 
 export default function StaffDashboard() {
   const navigate = useNavigate();
@@ -253,7 +259,7 @@ export default function StaffDashboard() {
       }
     }
 
-    const newSocket = io(API, {
+    const newSocket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
