@@ -684,6 +684,19 @@ export default function RestaurantDashboard() {
       setOrders(prev => {
         // Remove if completed/cancelled, otherwise update
         if (updatedOrder.status === 'completed' || updatedOrder.status === 'cancelled') {
+          // If history already loaded, prepend to it so it appears without refetch
+          if (updatedOrder.status === 'completed') {
+            setCompletedOrdersLoaded(loaded => {
+              if (loaded) {
+                setOrders(all => {
+                  const alreadyInHistory = all.find(o => o._id === updatedOrder._id && o.status === 'completed');
+                  if (alreadyInHistory) return all;
+                  return [updatedOrder, ...all.filter(o => o._id !== updatedOrder._id)];
+                });
+              }
+              return loaded;
+            });
+          }
           return prev.filter(o => o._id !== updatedOrder._id);
         }
         const exists = prev.some(o => o._id === updatedOrder._id);
@@ -746,9 +759,10 @@ export default function RestaurantDashboard() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [activeTab]);
 
-  // Load completed orders every time the history tab opens (fresh fetch)
+  // Load completed orders only on first visit to history tab — cache for session
   useEffect(() => {
     if (activeTab !== 'history') return;
+    if (completedOrdersLoaded) return; // already cached — skip fetch
     const restaurantId = localStorage.getItem('restaurantId');
     if (!restaurantId) return;
     setHistoryLoading(true);
@@ -756,13 +770,15 @@ export default function RestaurantDashboard() {
       .then(({ data }) => {
         setOrders(prev => {
           const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
-          return [...activeOrders, ...data];
+          const existingIds = new Set(activeOrders.map(o => o._id));
+          const newCompleted = data.filter(o => !existingIds.has(o._id));
+          return [...activeOrders, ...newCompleted];
         });
         setCompletedOrdersLoaded(true);
       })
       .catch(e => console.error('Failed to load completed orders:', e))
       .finally(() => setHistoryLoading(false));
-  }, [activeTab]);
+  }, [activeTab, completedOrdersLoaded]);
 
   // Lock body scroll when Staff Order tab is in order view (POS mode)
   useEffect(() => {
@@ -3379,6 +3395,15 @@ export default function RestaurantDashboard() {
                 <p className="text-xs text-gray-500 mt-0.5">Completed orders: {orders.filter(o => o.status === 'completed').length}</p>
               </div>
               <div className="flex items-center gap-2 w-full sm:w-auto">
+                {/* Manual refresh — resets cache and re-fetches from server */}
+                <button
+                  onClick={() => { setCompletedOrdersLoaded(false); }}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
+                  title="Refresh history"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                  Refresh
+                </button>
                 {/* Export Excel button */}
                 <button
                   onClick={() => {

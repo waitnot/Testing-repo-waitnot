@@ -67,6 +67,7 @@ export default function StaffDashboard() {
   // Order history
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const historyLoaded = useRef(false); // cache flag — only fetch once per session
   const [historySearch, setHistorySearch] = useState('');
 
   // Sales report
@@ -300,6 +301,13 @@ export default function StaffDashboard() {
         if (idx !== -1) { const n = [...prev]; n[idx] = o; return n; }
         return [o, ...prev];
       });
+      // If order completed, prepend to history cache so it shows immediately
+      if (o.status === 'completed' && historyLoaded.current) {
+        setHistoryOrders(prev => {
+          if (prev.find(x => x._id === o._id)) return prev;
+          return [o, ...prev];
+        });
+      }
     });
     newSocket.on('orders-updated', ({ orderIds, updateData }) => {
       if (updateData.status === 'completed' || updateData.status === 'cancelled') {
@@ -535,11 +543,14 @@ export default function StaffDashboard() {
     }
   };
 
-  const fetchHistory = async () => {
+  const fetchHistory = async (force = false) => {
+    // Use cached data unless forced refresh or not yet loaded
+    if (historyLoaded.current && !force) return;
     setHistoryLoading(true);
     try {
       const { data } = await axios.get(`${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed`);
       setHistoryOrders(data);
+      historyLoaded.current = true;
     } catch (e) {
       console.error(e);
     } finally {
@@ -2476,7 +2487,7 @@ export default function StaffDashboard() {
             <div className="p-4 sm:p-6 overflow-y-auto flex-1 pb-20">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-gray-800 text-lg">Order History</h2>
-                <button onClick={fetchHistory} className="text-xs text-red-500 font-semibold flex items-center gap-1">
+                <button onClick={() => fetchHistory(true)} className="text-xs text-red-500 font-semibold flex items-center gap-1">
                   <RefreshCw size={13} /> Refresh
                 </button>
               </div>
