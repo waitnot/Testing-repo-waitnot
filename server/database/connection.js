@@ -5,15 +5,24 @@ dotenv.config();
 
 const { Pool } = pg;
 
+// DATABASE_URL is set automatically by Domain India App Platform.
+// For local dev create a .env file with DATABASE_URL=postgres://...
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL environment variable is not set. Add it in your .env or platform config.');
+  process.exit(1);
+}
+
+const isLocalDB = process.env.DATABASE_URL.includes('localhost') ||
+                  process.env.DATABASE_URL.includes('127.0.0.1');
+const isNeon    = process.env.DATABASE_URL.includes('neon.tech');
+
 // Database configuration
 const dbConfig = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_0HWkqo9CysVg@ep-billowing-base-a4e5hyfo-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : {
-    rejectUnauthorized: false
-  },
+  connectionString: process.env.DATABASE_URL,
+  ssl: isLocalDB ? false : { rejectUnauthorized: false },
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000, // Increased for Neon cold start
+  connectionTimeoutMillis: isNeon ? 15000 : 5000,
   query_timeout: 60000,
   statement_timeout: 60000,
 };
