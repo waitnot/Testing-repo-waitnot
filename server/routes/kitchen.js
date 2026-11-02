@@ -18,7 +18,7 @@ const verifyKitchenStaff = async (req, res, next) => {
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) return res.status(401).json({ error: 'No token provided' });
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'waitnot-dev-secret-change-in-production');
 
     const sessionResult = await query(
       'SELECT * FROM staff_sessions WHERE session_token = $1 AND expires_at > NOW()',

@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { adminDB, restaurantDB } from '../db.js';
 import { query } from '../database/connection.js';
 
+import { JWT_SECRET, rateLimit } from '../middleware/auth.js';
 const router = express.Router();
 
 // Admin login

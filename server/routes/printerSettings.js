@@ -12,7 +12,7 @@ const verifyRestaurantToken = (req, res, next) => {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'waitnot-dev-secret-change-in-production');
     req.restaurantId = decoded.id;
     next();
   } catch (error) {
@@ -165,7 +165,7 @@ router.get('/admin/:restaurantId', async (req, res) => {
       return res.status(401).json({ error: 'Admin authentication required' });
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'admin_secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'waitnot-dev-secret-change-in-production');
     if (decoded.role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required' });
     }
