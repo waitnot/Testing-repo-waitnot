@@ -763,7 +763,7 @@ export const orderDB = {
     const params = [restaurantId];
 
     if (status === 'active') {
-      whereClause += " AND o.status != 'completed'";
+      whereClause += " AND o.status NOT IN ('completed', 'cancelled')";
     } else if (status) {
       whereClause += ' AND o.status = $2';
       params.push(status);
