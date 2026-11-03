@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit, Trash2, Eye, EyeOff, Users, Shield, Clock, Activity } from 'lucide-react';
+import { Plus, Edit, Trash2, Eye, EyeOff, Users, Shield, Clock, Activity, Key } from 'lucide-react';
 import axios from 'axios';
 
 const STAFF_ROLES = {
@@ -32,6 +32,12 @@ export default function StaffManagement({ restaurantId }) {
   const [activeTab, setActiveTab] = useState('staff');
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
+  // PIN management
+  const [pinModal, setPinModal] = useState(null);   // { staff, mode: 'set'|'reset' }
+  const [pinStatus, setPinStatus] = useState({});   // { [staffId]: { hasPin, isLocked } }
+  const [pinForm, setPinForm] = useState({ pin: '', confirmPin: '', adminPin: '' });
+  const [pinLoading, setPinLoading] = useState(false);
+  const [pinError, setPinError] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -59,6 +65,7 @@ export default function StaffManagement({ restaurantId }) {
       setLoading(true);
       const { data } = await axios.get(`/api/staff/restaurant/${restaurantId}`);
       setStaff(data);
+      fetchPinStatuses(data);
     } catch (error) {
       console.error('Error fetching staff:', error);
       showToast('Failed to fetch staff members', 'error');
@@ -73,6 +80,57 @@ export default function StaffManagement({ restaurantId }) {
       setActivityLogs(data);
     } catch (error) {
       console.error('Error fetching activity logs:', error);
+    }
+  };
+
+  const fetchPinStatuses = async (staffList) => {
+    const list = staffList || staff || [];
+    if (list.length === 0) return;
+    try {
+      const results = await Promise.all(
+        list.map(s => axios.get(`/api/pin/status/${s.id}`).then(r => [s.id, r.data]).catch(() => [s.id, {}]))
+      );
+      const map = {};
+      results.forEach(([id, data]) => { map[id] = data; });
+      setPinStatus(map);
+    } catch (_) {}
+  };
+
+  const handleSetPin = async () => {
+    const { pin, confirmPin } = pinForm;
+    if (!/^[0-9]{4,6}$/.test(pin)) { setPinError('PIN must be 4–6 digits'); return; }
+    if (pin !== confirmPin) { setPinError('PINs do not match'); return; }
+    setPinLoading(true); setPinError('');
+    try {
+      // Manager sets/resets PIN for any staff in their restaurant (no current PIN needed)
+      await axios.post(`/api/staff/restaurant/${restaurantId}/reset-pin`, {
+        staffId: pinModal.staff.id,
+        newPin: pin,
+      });
+      showToast(`PIN ${pinModal.mode === 'set' ? 'set' : 'reset'} for ${pinModal.staff.name}`);
+      setPinModal(null);
+      await fetchPinStatuses();
+    } catch (e) {
+      // Fallback: use /api/pin/set with staff's current password
+      if (pinForm.adminPin) {
+        try {
+          await axios.post('/api/pin/set', {
+            staffId: pinModal.staff.id,
+            pin,
+            currentPassword: pinForm.adminPin,
+          });
+          showToast(`PIN set for ${pinModal.staff.name}`);
+          setPinModal(null);
+          await fetchPinStatuses();
+        } catch (e2) {
+          setPinError(e2.response?.data?.error || 'Failed to set PIN');
+        }
+      } else {
+        setPinError(e.response?.data?.error || 'Failed — try providing the staff password below');
+        setPinForm(f => ({ ...f, showPasswordField: true }));
+      }
+    } finally {
+      setPinLoading(false);
     }
   };
 
@@ -276,6 +334,13 @@ export default function StaffManagement({ restaurantId }) {
                     <Edit size={16} />
                   </button>
                   <button
+                    onClick={() => openPinModal(staffMember, pinStatus[staffMember.id]?.hasPin ? 'reset' : 'set')}
+                    className={`p-1 rounded transition-colors ${pinStatus[staffMember.id]?.hasPin ? 'text-green-600 hover:text-green-800' : 'text-gray-400 hover:text-orange-500'}`}
+                    title={pinStatus[staffMember.id]?.hasPin ? 'PIN set — click to reset' : 'No PIN — click to set'}
+                  >
+                    <Key size={16} />
+                  </button>
+                  <button
                     onClick={() => handleDelete(staffMember.id, staffMember.name)}
                     className="p-1 text-red-600 hover:text-red-800"
                     title="Delete"
@@ -306,6 +371,17 @@ export default function StaffManagement({ restaurantId }) {
                   </span>
                 </div>
 
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-sm text-gray-600">PIN Login:</span>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                    pinStatus[staffMember.id]?.isLocked ? 'bg-red-100 text-red-700' :
+                    pinStatus[staffMember.id]?.hasPin  ? 'bg-green-100 text-green-700' :
+                    'bg-gray-100 text-gray-500'
+                  }`}>
+                    {pinStatus[staffMember.id]?.isLocked ? 'Locked' :
+                     pinStatus[staffMember.id]?.hasPin  ? 'Enabled' : 'Not set'}
+                  </span>
+                </div>
                 <div className="text-xs text-gray-500 mt-2">
                   <div>Created: {formatDate(staffMember.created_at)}</div>
                   {staffMember.updated_at !== staffMember.created_at && (
@@ -511,6 +587,95 @@ export default function StaffManagement({ restaurantId }) {
       )}
 
       {/* Confirm Modal */}
+      {/* PIN Management Modal */}
+      {pinModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-1">
+              {pinModal.mode === 'set' ? 'Set PIN' : 'Reset PIN'} — {pinModal.staff.name}
+            </h2>
+            <p className="text-sm text-gray-500 mb-4">
+              {pinModal.mode === 'set'
+                ? "Enter the staff member's current password to verify, then set a new PIN."
+                : "Enter a new PIN for this staff member."}
+            </p>
+
+            {pinError && (
+              <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                {pinError}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {(pinForm.showPasswordField) && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Staff's Current Password (required for first-time setup)
+                  </label>
+                  <input
+                    type="password"
+                    value={pinForm.adminPin}
+                    onChange={e => setPinForm(f => ({ ...f, adminPin: e.target.value }))}
+                    placeholder="Staff's current password"
+                    autoFocus
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">The staff member's login password, not yours.</p>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">New PIN (4–6 digits)</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={pinForm.pin}
+                  onChange={e => setPinForm(f => ({ ...f, pin: e.target.value.replace(/[^0-9]/g,'').slice(0,6) }))}
+                  placeholder="e.g. 1234"
+                  maxLength={6}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-red-300"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Confirm PIN</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={pinForm.confirmPin}
+                  onChange={e => setPinForm(f => ({ ...f, confirmPin: e.target.value.replace(/[^0-9]/g,'').slice(0,6) }))}
+                  placeholder="Repeat PIN"
+                  maxLength={6}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-red-300"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => setPinModal(null)}
+                className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              {pinModal.mode === 'reset' && pinStatus[pinModal.staff.id]?.hasPin && (
+                <button
+                  onClick={() => handleRemovePin(pinModal.staff)}
+                  className="py-2.5 px-3 border border-red-200 rounded-xl text-sm text-red-600 hover:bg-red-50"
+                >
+                  Remove
+                </button>
+              )}
+              <button
+                onClick={handleSetPin}
+                disabled={pinLoading || !pinForm.pin || !pinForm.confirmPin}
+                className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-semibold hover:bg-red-600 disabled:opacity-40"
+              >
+                {pinLoading ? 'Saving…' : pinModal.mode === 'set' ? 'Set PIN' : 'Reset PIN'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmModal && (
         <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">

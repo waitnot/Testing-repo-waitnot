@@ -589,6 +589,49 @@ router.post('/restaurant/:restaurantId/reset-password', async (req, res) => {
   }
 });
 
+// Manager sets/resets PIN for any staff in their restaurant (no current PIN needed)
+// This endpoint allows restaurant owners/managers to set staff PINs from the dashboard
+router.post('/restaurant/:restaurantId/reset-pin', async (req, res) => {
+  try {
+    const { restaurantId } = req.params;
+    const { staffId, newPin } = req.body;
+    if (!staffId) return res.status(400).json({ error: 'staffId required' });
+
+    // Verify staff belongs to this restaurant
+    const staffCheck = await query(
+      'SELECT id, name FROM staff WHERE id=$1 AND restaurant_id=$2 AND is_active=true',
+      [staffId, restaurantId]
+    );
+    if (staffCheck.rows.length === 0) return res.status(404).json({ error: 'Staff not found in this restaurant' });
+
+    if (!newPin) {
+      // Remove PIN
+      await query('DELETE FROM staff_pins WHERE staff_id=$1', [staffId]);
+      return res.json({ success: true, message: 'PIN removed' });
+    }
+
+    // Validate PIN
+    if (!/^[0-9]{4,6}$/.test(String(newPin))) {
+      return res.status(400).json({ error: 'PIN must be 4–6 digits' });
+    }
+
+    const bcrypt = (await import('bcryptjs')).default;
+    const pinHash = await bcrypt.hash(String(newPin), 12);
+
+    await query(
+      `INSERT INTO staff_pins (staff_id, restaurant_id, pin_hash, failed_attempts, locked_until)
+       VALUES ($1,$2,$3,0,NULL)
+       ON CONFLICT (staff_id) DO UPDATE
+         SET pin_hash=$3, failed_attempts=0, locked_until=NULL, updated_at=CURRENT_TIMESTAMP`,
+      [staffId, restaurantId, pinHash]
+    );
+
+    res.json({ success: true, message: `PIN set for ${staffCheck.rows[0].name}` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get available roles
 router.get('/roles', (req, res) => {
   res.json(STAFF_ROLES);
