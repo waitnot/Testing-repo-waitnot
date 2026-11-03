@@ -70,8 +70,11 @@ export default function StaffDashboard() {
   const historyLoaded = useRef(false);
   const [historyPage, setHistoryPage] = useState(0);
   const [historyHasMore, setHistoryHasMore] = useState(true);
-  const historySentinelRef = useRef(null);
-  const historyLoadingRef  = useRef(false); // cache flag — only fetch once per session
+  const historySentinelRef  = useRef(null);
+  const historyLoadingRef   = useRef(false);
+  const searchDebounceRef   = useRef(null);
+  const lastHistoryRowRef   = useRef(null);
+  const [historySearchQuery, setHistorySearchQuery] = useState(''); // cache flag — only fetch once per session
   const historyScrollRef   = useRef(null);   // ref for the scrollable history container
   const historySavedScroll = useRef(0);      // scroll position to restore after load-more
   const [historySearch, setHistorySearch] = useState('');
@@ -566,7 +569,7 @@ export default function StaffDashboard() {
     } catch {}
   };
 
-  const fetchHistory = async (force = false, page = 0) => {
+  const fetchHistory = async (force = false, page = 0, searchQ = '') => {
     // On first load (page 0, not forced), check sessionStorage cache
     if (!force && page === 0) {
       if (historyLoaded.current) return; // already in memory
@@ -587,8 +590,9 @@ export default function StaffDashboard() {
     setHistoryLoading(true);
     try {
       const offset = page * 10;
+      const searchParam = searchQ ? `&search=${encodeURIComponent(searchQ)}` : '';
       const { data } = await axios.get(
-        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=10&offset=${offset}`
+        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=10&offset=${offset}${searchParam}`
       );
       if (page === 0 || force) {
         setHistoryOrders(data);
@@ -631,7 +635,7 @@ export default function StaffDashboard() {
       setHistoryPage(prev => {
         const next = prev + 1;
         if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
-        fetchHistory(false, next).finally(() => { historyLoadingRef.current = false; });
+        fetchHistory(false, next, historySearchQuery).finally(() => { historyLoadingRef.current = false; });
         return next;
       });
     }, { threshold: 0.1 });
@@ -2576,8 +2580,22 @@ export default function StaffDashboard() {
               {/* Search */}
               <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-4">
                 <Search size={14} className="text-gray-400 shrink-0" />
-                <input value={historySearch} onChange={e => setHistorySearch(e.target.value)}
-                  placeholder="Search by table, item..." className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
+                <input value={historySearch}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setHistorySearch(val);
+                    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+                    searchDebounceRef.current = setTimeout(() => {
+                      const q = val.trim();
+                      setHistorySearchQuery(q);
+                      historyLoaded.current = false;
+                      setHistoryPage(0);
+                      setHistoryHasMore(true);
+                      setHistoryOrders([]);
+                      fetchHistory(true, 0, q);
+                    }, 400);
+                  }}
+                  placeholder="Search #, amount, name, phone, item..." className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
                 {historySearch && <button onClick={() => setHistorySearch('')}><X size={14} className="text-gray-400" /></button>}
               </div>
 
@@ -2593,16 +2611,7 @@ export default function StaffDashboard() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {historyOrders
-                    .filter(o => {
-                      const q = historySearch.toLowerCase();
-                      if (!q) return true;
-                      return (
-                        o.tableNumber?.toString().includes(q) ||
-                        o.items?.some(i => i.name.toLowerCase().includes(q)) ||
-                        o.customerName?.toLowerCase().includes(q) ||
-                        o.orderType?.toLowerCase().includes(q)
-                      );
-                    })
+                    .filter(() => true) // filtering done server-side
                     .map(order => (
                       <div key={order._id} className="bg-white rounded-2xl shadow-sm overflow-hidden">
                         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
@@ -2659,7 +2668,7 @@ export default function StaffDashboard() {
                     const p = historyPage + 1;
                     setHistoryPage(p);
                     if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
-                    fetchHistory(false, p).finally(() => { historyLoadingRef.current = false; });
+                    fetchHistory(false, p, historySearchQuery).finally(() => { historyLoadingRef.current = false; });
                   }}
                 >
                   {!historyLoading && (
@@ -2796,7 +2805,7 @@ export default function StaffDashboard() {
               <button key={tab.id} onClick={() => {
                 setActiveView(tab.id);
                 setSelectedTable(null);
-                if (tab.id === 'history') { setHistoryPage(0); fetchHistory(false, 0); }
+                if (tab.id === 'history') { setHistoryPage(0); setHistorySearch(''); setHistorySearchQuery(''); fetchHistory(false, 0, ''); }
                 if (tab.id === 'sales') fetchSales(salesPeriod);
               }}
                 className={`flex-1 py-3 flex flex-col items-center gap-0.5 relative ${active ? 'text-red-500' : 'text-gray-400'}`}>

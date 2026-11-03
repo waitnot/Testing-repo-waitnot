@@ -506,7 +506,6 @@ export default function RestaurantDashboard() {
   const historySentinelRef = useRef(null);   // ref for IntersectionObserver sentinel
   const historyLoadingRef  = useRef(false);  // prevents double-fire from observer
   const historyScrollRef   = useRef(null);   // ref for the scrollable history container
-  const historySavedScroll = useRef(0);      // scroll position to restore after load-more
   const [menuVisibilitySaving, setMenuVisibilitySaving] = useState(false);
   const [menuOffMsgDraft, setMenuOffMsgDraft] = useState('');
   const [feedback, setFeedback] = useState([]);
@@ -565,6 +564,9 @@ export default function RestaurantDashboard() {
   const [activeBottomTab, setActiveBottomTab] = useState('orders');
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const [historySearch, setHistorySearch] = useState('');
+  const [historySearchQuery, setHistorySearchQuery] = useState(''); // debounced, sent to server
+  const searchDebounceRef = useRef(null);   // debounce timer
+  const lastRowRef = useRef(null);           // ref on last loaded row — used to maintain scroll position
   const [clearTableModal, setClearTableModal] = useState(null); // { tableNumber, tableOrders, totalAmount }
   const [shiftModal, setShiftModal] = useState(null); // { orders, type: 'table'|'room', current: number }
   const [confirmModal, setConfirmModal] = useState(null); // { message, onConfirm }
@@ -786,12 +788,12 @@ export default function RestaurantDashboard() {
   };
 
   // Paginated history load — 10 at a time, more on scroll
-  const loadHistoryPage = async (page, reset = false) => {
+  const loadHistoryPage = async (page, reset = false, searchQ = '') => {
     const restaurantId = localStorage.getItem('restaurantId');
     if (!restaurantId) return;
 
-    // On page 0 (initial open), check cache first
-    if (page === 0 && reset) {
+    // On page 0 initial open (no search), check cache first
+    if (page === 0 && reset && !searchQ) {
       const cache = getHistoryCache(restaurantId);
       if (cache) {
         setOrders(prev => {
@@ -809,8 +811,9 @@ export default function RestaurantDashboard() {
     setHistoryLoading(true);
     try {
       const offset = page * 10;
+      const searchParam = searchQ ? `&search=${encodeURIComponent(searchQ)}` : '';
       const { data } = await axios.get(
-        `/api/orders/restaurant/${restaurantId}?status=completed&limit=10&offset=${offset}`
+        `/api/orders/restaurant/${restaurantId}?status=completed&limit=10&offset=${offset}${searchParam}`
       );
       setOrders(prev => {
         const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
@@ -836,11 +839,11 @@ export default function RestaurantDashboard() {
     }
   };
 
-  // After a load-more renders, restore the saved scroll position
+  // After load-more, scroll the last known row into view to prevent jumping to top
   useLayoutEffect(() => {
-    if (historySavedScroll.current > 0 && historyScrollRef.current) {
-      historyScrollRef.current.scrollTop = historySavedScroll.current;
-      historySavedScroll.current = 0;
+    if (lastRowRef.current) {
+      lastRowRef.current.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      lastRowRef.current = null;
     }
   });
 
@@ -862,7 +865,6 @@ export default function RestaurantDashboard() {
       historyLoadingRef.current = true;
       setHistoryPage(prev => {
         const next = prev + 1;
-        if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
         loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
         return next;
       });
@@ -3603,9 +3605,25 @@ export default function RestaurantDashboard() {
                   <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="Search by #001, table, customer, item..."
+                    placeholder="Search #, amount, name, phone, address, item..."
                     value={historySearch || ''}
-                    onChange={e => setHistorySearch(e.target.value)}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setHistorySearch(val);
+                      // Debounce: wait 400ms after typing stops, then search server
+                      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+                      searchDebounceRef.current = setTimeout(() => {
+                        const q = val.trim();
+                        setHistorySearchQuery(q);
+                        // Reset pagination and fetch from server with search
+                        setHistoryPage(0);
+                        setHistoryHasMore(true);
+                        setCompletedOrdersLoaded(false);
+                        setOrders(prev => prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled'));
+                        loadHistoryPage(0, true, q);
+                        setCompletedOrdersLoaded(true);
+                      }, 400);
+                    }}
                     className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                   />
                 </div>
@@ -3683,17 +3701,7 @@ export default function RestaurantDashboard() {
                       : first.orderType === 'delivery' ? 'Delivery'
                       : 'Order';
 
-                    // Filter by search
-                    if (historySearch) {
-                      const q = historySearch.toLowerCase().replace(/^#/, '');
-                      const matchesLabel = label.toLowerCase().includes(q);
-                      const matchesCustomer = (first.customerName || '').toLowerCase().includes(q);
-                      const matchesItem = Object.keys(combinedItems).some(n => n.toLowerCase().includes(q));
-                      const matchesOrderNum = first.orderNumber
-                        ? String(first.orderNumber).padStart(3, '0').includes(q)
-                        : false;
-                      if (!matchesLabel && !matchesCustomer && !matchesItem && !matchesOrderNum) return null;
-                    }
+                    // Search is handled server-side — no client filter needed
 
                     const orderNum = idx + 1;
 
@@ -3755,14 +3763,13 @@ export default function RestaurantDashboard() {
             )}
                         {/* Infinite scroll sentinel — observed by useEffect, no inline observer */}
             {historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
-              <div ref={historySentinelRef}
+              <div ref={el => { historySentinelRef.current = el; lastRowRef.current = el; }}
                 className="flex items-center justify-center py-6 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors select-none"
                 onClick={() => {
                   if (historyLoadingRef.current || !historyHasMore) return;
                   historyLoadingRef.current = true;
                   const next = historyPage + 1;
                   setHistoryPage(next);
-                  if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
                   loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
                 }}
               >
