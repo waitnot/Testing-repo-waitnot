@@ -565,6 +565,8 @@ export default function RestaurantDashboard() {
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const [historySearch, setHistorySearch] = useState('');
   const [historySearchQuery, setHistorySearchQuery] = useState(''); // debounced, sent to server
+  const [historySearchMode, setHistorySearchMode] = useState(false); // true when showing search results
+  const [historySearchResults, setHistorySearchResults] = useState([]); // search results (separate from main orders)
   const searchDebounceRef = useRef(null);   // debounce timer
   const lastRowRef = useRef(null);           // ref on last loaded row — used to maintain scroll position
   const [clearTableModal, setClearTableModal] = useState(null); // { tableNumber, tableOrders, totalAmount }
@@ -853,35 +855,30 @@ export default function RestaurantDashboard() {
     const restaurantId = localStorage.getItem('restaurantId');
     if (!restaurantId) return;
     setHistorySearchQuery(q);
-    setHistoryPage(0);
-    setHistoryHasMore(true);
-    // Clear only completed orders from state (keep active orders)
-    setOrders(prev => prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled'));
-    setCompletedOrdersLoaded(false);
-    // Fetch directly — do not rely on useEffect
+
+    if (!q) {
+      // Clear search — go back to normal history
+      setHistorySearchMode(false);
+      setHistorySearchResults([]);
+      setHistoryPage(0);
+      setHistoryHasMore(true);
+      // If history was never loaded, load it now
+      if (!completedOrdersLoaded) {
+        loadHistoryPage(0, true);
+      }
+      return;
+    }
+
+    // Search mode — fetch from server into SEPARATE state, don't touch orders/completedOrdersLoaded
+    setHistorySearchMode(true);
+    setHistorySearchResults([]);
     setHistoryLoading(true);
     try {
-      const searchParam = q ? `&search=${encodeURIComponent(q)}` : '';
       const { data } = await axios.get(
-        `/api/orders/restaurant/${restaurantId}?status=completed&limit=10&offset=0${searchParam}`
+        `/api/orders/restaurant/${restaurantId}?status=completed&limit=50&offset=0&search=${encodeURIComponent(q)}`
       );
-      setOrders(prev => {
-        const active = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
-        const ids = new Set(active.map(o => o._id));
-        return [...active, ...data.filter(o => !ids.has(o._id))];
-      });
-      setHistoryHasMore(data.length === 10);
-      setHistoryPage(0);
-      // Only cache when not searching (cache full history, not filtered results)
-      if (!q) {
-        const rid = restaurantId;
-        setCompletedOrdersLoaded(true);
-        setOrders(prev => {
-          const completed = prev.filter(o => o.status === 'completed');
-          if (typeof setHistoryCache === 'function') setHistoryCache(rid, completed, 0, data.length === 10);
-          return prev;
-        });
-      }
+      setHistorySearchResults(data);
+      setHistoryHasMore(false); // search returns up to 50 at once
     } catch (e) {
       console.error('Search failed:', e);
     } finally {
@@ -3529,7 +3526,7 @@ export default function RestaurantDashboard() {
         {activeTab === 'history' && (
           <div ref={historyScrollRef} className="w-full px-3 sm:px-6 py-4 overflow-y-auto [&>*]:max-w-none">
             {/* Initial loading state — only shows on very first load */}
-            {historyLoading && orders.filter(o => o.status === 'completed').length === 0 && (
+            {historyLoading && (historySearchMode ? historySearchResults.length === 0 : orders.filter(o => o.status === 'completed').length === 0) && (
               <div className="flex items-center justify-center py-16 gap-3">
                 <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                 <p className="text-sm text-gray-500">Loading order history...</p>
@@ -3540,7 +3537,11 @@ export default function RestaurantDashboard() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-lg font-bold text-gray-800">Order History</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Completed orders: {orders.filter(o => o.status === 'completed').length}</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {historySearchMode
+                    ? `Search results: ${historySearchResults.length}`
+                    : `Completed orders: ${orders.filter(o => o.status === 'completed').length}`}
+                </p>
               </div>
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 {/* Manual refresh — resets cache and re-fetches from server */}
@@ -3555,7 +3556,7 @@ export default function RestaurantDashboard() {
                 {/* Export Excel button */}
                 <button
                   onClick={() => {
-                    const completed = orders.filter(o => o.status === 'completed');
+                    const completed = historySearchMode ? historySearchResults : orders.filter(o => o.status === 'completed');
                     if (completed.length === 0) { showToast('No completed orders to export', 'error'); return; }
 
                     // GST computation (assume 5% GST split as 2.5% CGST + 2.5% SGST for intra-state)
@@ -3674,7 +3675,15 @@ export default function RestaurantDashboard() {
               </div>
             </div>
 
-            {orders.filter(o => o.status === 'completed').length === 0 ? (
+            {/* When in search mode, display count of search results */}
+            {historySearchMode && !historyLoading && (
+              <p className="text-xs text-gray-500 mb-3">
+                {historySearchResults.length === 0
+                  ? `No orders found for "${historySearchQuery}"`
+                  : `${historySearchResults.length} order${historySearchResults.length !== 1 ? 's' : ''} found for "${historySearchQuery}"`}
+              </p>
+            )}
+            {(historySearchMode ? historySearchResults : orders.filter(o => o.status === 'completed')).length === 0 && !historyLoading ? (
               <div className="text-center py-16 text-gray-400 bg-white rounded-xl">
                 <p className="text-sm">No completed orders yet</p>
               </div>
@@ -3695,7 +3704,7 @@ export default function RestaurantDashboard() {
 
                 {/* Rows */}
                 {(() => {
-                  const completedOrders = orders.filter(o => o.status === 'completed');
+                  const completedOrders = historySearchMode ? historySearchResults : orders.filter(o => o.status === 'completed');
                   const groupedOrders = [];
                   const processedIds = new Set();
 
@@ -3806,7 +3815,7 @@ export default function RestaurantDashboard() {
               </div>
             )}
                         {/* Infinite scroll sentinel — observed by useEffect, no inline observer */}
-            {historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
+            {!historySearchMode && historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
               <div ref={el => { historySentinelRef.current = el; lastRowRef.current = el; }}
                 className="flex items-center justify-center py-6 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors select-none"
                 onClick={() => {
@@ -3825,13 +3834,13 @@ export default function RestaurantDashboard() {
                 )}
               </div>
             )}
-            {historyLoading && orders.filter(o => o.status === 'completed').length > 0 && (
+            {!historySearchMode && historyLoading && orders.filter(o => o.status === 'completed').length > 0 && (
               <div className="flex items-center justify-center py-6 gap-2">
                 <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
                 <span className="text-sm text-gray-400">Loading more...</span>
               </div>
             )}
-            {!historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
+            {!historySearchMode && !historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
               <p className="text-center text-xs text-gray-300 py-4">All orders loaded</p>
             )}
 </>)}

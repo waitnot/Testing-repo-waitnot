@@ -74,7 +74,9 @@ export default function StaffDashboard() {
   const historyLoadingRef   = useRef(false);
   const searchDebounceRef   = useRef(null);
   const lastHistoryRowRef   = useRef(null);
-  const [historySearchQuery, setHistorySearchQuery] = useState(''); // cache flag — only fetch once per session
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+  const [historySearchMode, setHistorySearchMode] = useState(false);
+  const [historySearchResults, setHistorySearchResults] = useState([]); // cache flag — only fetch once per session
   const historyScrollRef   = useRef(null);   // ref for the scrollable history container
   const historySavedScroll = useRef(0);      // scroll position to restore after load-more
   const [historySearch, setHistorySearch] = useState('');
@@ -569,23 +571,27 @@ export default function StaffDashboard() {
     } catch {}
   };
 
-  // Search function — fetches directly from server on Enter key
+  // Search function — fetches into separate state, does NOT touch historyOrders or historyLoaded
   const runStaffHistorySearch = async (query) => {
     const q = (query || '').trim();
     setHistorySearchQuery(q);
-    setHistoryPage(0);
-    setHistoryHasMore(true);
-    setHistoryOrders([]);
-    historyLoaded.current = false;
+
+    if (!q) {
+      setHistorySearchMode(false);
+      setHistorySearchResults([]);
+      // If history was never loaded, load it now
+      if (!historyLoaded.current) fetchHistory(false, 0, '');
+      return;
+    }
+
+    setHistorySearchMode(true);
+    setHistorySearchResults([]);
     setHistoryLoading(true);
     try {
-      const searchParam = q ? `&search=${encodeURIComponent(q)}` : '';
       const { data } = await axios.get(
-        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=10&offset=0${searchParam}`
+        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=50&offset=0&search=${encodeURIComponent(q)}`
       );
-      setHistoryOrders(data);
-      setHistoryHasMore(data.length === 10);
-      if (!q) historyLoaded.current = true;
+      setHistorySearchResults(data);
     } catch (e) {
       console.error('Staff history search failed:', e);
     } finally {
@@ -2628,14 +2634,19 @@ export default function StaffDashboard() {
                 <div className="flex justify-center py-16">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500"></div>
                 </div>
-              ) : historyOrders.length === 0 ? (
+              ) : (historySearchMode ? historySearchResults : historyOrders).length === 0 ? (
                 <div className="text-center py-16 text-gray-400">
                   <History size={40} className="mx-auto mb-3 opacity-40" />
                   <p className="text-sm">No completed orders yet</p>
                 </div>
               ) : (
+                {historySearchMode && !historyLoading && (
+                  <p className="text-xs text-gray-400 mb-3">
+                    {historySearchResults.length === 0 ? `No results for "${historySearchQuery}"` : `${historySearchResults.length} result${historySearchResults.length !== 1 ? 's' : ''} for "${historySearchQuery}"`}
+                  </p>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {historyOrders
+                  {(historySearchMode ? historySearchResults : historyOrders)
                     .filter(() => true) // filtering done server-side
                     .map(order => (
                       <div key={order._id} className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -2684,7 +2695,7 @@ export default function StaffDashboard() {
               )}
 
               {/* Stable sentinel — IntersectionObserver wired via useEffect */}
-              {historyHasMore && historyOrders.length > 0 && !historySearch && (
+              {!historySearchMode && historyHasMore && historyOrders.length > 0 && (
                 <div ref={historySentinelRef}
                   className="flex items-center justify-center py-5 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors"
                   onClick={() => {
@@ -2704,13 +2715,13 @@ export default function StaffDashboard() {
                   )}
                 </div>
               )}
-              {historyLoading && historyOrders.length > 0 && (
+              {!historySearchMode && historyLoading && historyOrders.length > 0 && (
                 <div className="flex items-center justify-center py-5 gap-2">
                   <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
                   <span className="text-sm text-gray-400">Loading more...</span>
                 </div>
               )}
-              {!historyHasMore && historyOrders.length > 0 && (
+              {!historySearchMode && !historyHasMore && historyOrders.length > 0 && (
                 <p className="text-center text-xs text-gray-300 py-3">All orders loaded</p>
               )}
             </div>
