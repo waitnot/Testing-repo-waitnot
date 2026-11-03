@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogOut, Plus, Minus, ShoppingCart, X, Search, UtensilsCrossed, ClipboardList, User, Printer, Trash2, Settings, RefreshCw, Wifi, WifiOff, History, TrendingUp } from 'lucide-react';
 import { smartPrint, testBluetoothPrinter, scanBluetoothDevices, stopBluetoothScan, getPairedBluetoothDevices, connectBluetoothPrinter, disconnectBluetoothPrinter, getBluetoothConnectionState, addBluetoothConnectionListener, addBluetoothScanListener, requestBluetoothPairing } from '../utils/qzPrint.js';
@@ -72,6 +72,8 @@ export default function StaffDashboard() {
   const [historyHasMore, setHistoryHasMore] = useState(true);
   const historySentinelRef = useRef(null);
   const historyLoadingRef  = useRef(false); // cache flag — only fetch once per session
+  const historyScrollRef   = useRef(null);   // ref for the scrollable history container
+  const historySavedScroll = useRef(0);      // scroll position to restore after load-more
   const [historySearch, setHistorySearch] = useState('');
 
   // Sales report
@@ -547,9 +549,41 @@ export default function StaffDashboard() {
     }
   };
 
+  // History cache helpers (sessionStorage, 10-min TTL)
+  const HISTORY_CACHE_TTL = 10 * 60 * 1000;
+  const getHistoryCacheSD = (restaurantId) => {
+    try {
+      const raw = sessionStorage.getItem(`historyCache_${restaurantId}`);
+      if (!raw) return null;
+      const cache = JSON.parse(raw);
+      if (Date.now() - cache.cachedAt > HISTORY_CACHE_TTL) { sessionStorage.removeItem(`historyCache_${restaurantId}`); return null; }
+      return cache;
+    } catch { return null; }
+  };
+  const setHistoryCacheSD = (restaurantId, orders, page, hasMore) => {
+    try {
+      sessionStorage.setItem(`historyCache_${restaurantId}`, JSON.stringify({ orders, page, hasMore, cachedAt: Date.now() }));
+    } catch {}
+  };
+
   const fetchHistory = async (force = false, page = 0) => {
-    // Use cached data unless forced refresh or not yet loaded
-    if (historyLoaded.current && !force && page === 0) return;
+    // On first load (page 0, not forced), check sessionStorage cache
+    if (!force && page === 0) {
+      if (historyLoaded.current) return; // already in memory
+      const cache = getHistoryCacheSD(staff?.restaurant_id);
+      if (cache) {
+        setHistoryOrders(cache.orders);
+        setHistoryPage(cache.page);
+        setHistoryHasMore(cache.hasMore);
+        historyLoaded.current = true;
+        return;
+      }
+    }
+    // On forced refresh (page 0 + force), clear the cache first
+    if (force && page === 0) {
+      sessionStorage.removeItem(`historyCache_${staff?.restaurant_id}`);
+      historyLoaded.current = false;
+    }
     setHistoryLoading(true);
     try {
       const offset = page * 10;
@@ -558,10 +592,13 @@ export default function StaffDashboard() {
       );
       if (page === 0 || force) {
         setHistoryOrders(data);
+        setHistoryCacheSD(staff.restaurant_id, data, page, data.length === 10);
       } else {
         setHistoryOrders(prev => {
           const existingIds = new Set(prev.map(o => o._id));
-          return [...prev, ...data.filter(o => !existingIds.has(o._id))];
+          const merged = [...prev, ...data.filter(o => !existingIds.has(o._id))];
+          setHistoryCacheSD(staff.restaurant_id, merged, page, data.length === 10);
+          return merged;
         });
       }
       setHistoryHasMore(data.length === 10);
@@ -572,6 +609,14 @@ export default function StaffDashboard() {
       setHistoryLoading(false);
     }
   };
+
+  // After a load-more renders, restore saved scroll position
+  useLayoutEffect(() => {
+    if (historySavedScroll.current > 0 && historyScrollRef.current) {
+      historyScrollRef.current.scrollTop = historySavedScroll.current;
+      historySavedScroll.current = 0;
+    }
+  });
 
   // Stable IntersectionObserver — wired via useEffect, not inline ref callback
   useEffect(() => {
@@ -585,6 +630,7 @@ export default function StaffDashboard() {
       historyLoadingRef.current = true;
       setHistoryPage(prev => {
         const next = prev + 1;
+        if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
         fetchHistory(false, next).finally(() => { historyLoadingRef.current = false; });
         return next;
       });
@@ -2519,7 +2565,7 @@ export default function StaffDashboard() {
 
           {/* ORDER HISTORY */}
           {activeView === 'history' && (
-            <div className="p-4 sm:p-6 overflow-y-auto flex-1 pb-20">
+            <div ref={historyScrollRef} className="p-4 sm:p-6 overflow-y-auto flex-1 pb-20">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-gray-800 text-lg">Order History</h2>
                 <button onClick={() => fetchHistory(true)} className="text-xs text-red-500 font-semibold flex items-center gap-1">
@@ -2612,6 +2658,7 @@ export default function StaffDashboard() {
                     historyLoadingRef.current = true;
                     const p = historyPage + 1;
                     setHistoryPage(p);
+                    if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
                     fetchHistory(false, p).finally(() => { historyLoadingRef.current = false; });
                   }}
                 >

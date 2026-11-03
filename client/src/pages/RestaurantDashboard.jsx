@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Edit, Trash2, LogOut, X, Settings, Printer, BarChart3, User, Search, GripVertical, ShoppingCart, Upload, Menu, QrCode, Clock, Wifi, WifiOff, Package, MessageSquare, ChevronRight, Bell, Zap, Truck, CheckCircle, Calendar } from 'lucide-react';
 import axios from 'axios';
@@ -505,6 +505,8 @@ export default function RestaurantDashboard() {
   const HISTORY_PAGE_SIZE = 10;
   const historySentinelRef = useRef(null);   // ref for IntersectionObserver sentinel
   const historyLoadingRef  = useRef(false);  // prevents double-fire from observer
+  const historyScrollRef   = useRef(null);   // ref for the scrollable history container
+  const historySavedScroll = useRef(0);      // scroll position to restore after load-more
   const [menuVisibilitySaving, setMenuVisibilitySaving] = useState(false);
   const [menuOffMsgDraft, setMenuOffMsgDraft] = useState('');
   const [feedback, setFeedback] = useState([]);
@@ -765,10 +767,45 @@ export default function RestaurantDashboard() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [activeTab]);
 
+  // History cache helpers (sessionStorage, 10-min TTL)
+  const HISTORY_CACHE_TTL = 10 * 60 * 1000;
+  const getHistoryCache = (restaurantId) => {
+    try {
+      const raw = sessionStorage.getItem(`historyCache_${restaurantId}`);
+      if (!raw) return null;
+      const cache = JSON.parse(raw);
+      if (Date.now() - cache.cachedAt > HISTORY_CACHE_TTL) { sessionStorage.removeItem(`historyCache_${restaurantId}`); return null; }
+      return cache;
+    } catch { return null; }
+  };
+  const setHistoryCache = (restaurantId, orders, page, hasMore) => {
+    try {
+      const completedOnly = orders.filter(o => o.status === 'completed');
+      sessionStorage.setItem(`historyCache_${restaurantId}`, JSON.stringify({ orders: completedOnly, page, hasMore, cachedAt: Date.now() }));
+    } catch {}
+  };
+
   // Paginated history load — 10 at a time, more on scroll
   const loadHistoryPage = async (page, reset = false) => {
     const restaurantId = localStorage.getItem('restaurantId');
     if (!restaurantId) return;
+
+    // On page 0 (initial open), check cache first
+    if (page === 0 && reset) {
+      const cache = getHistoryCache(restaurantId);
+      if (cache) {
+        setOrders(prev => {
+          const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+          const existingIds = new Set(activeOrders.map(o => o._id));
+          return [...activeOrders, ...cache.orders.filter(o => !existingIds.has(o._id))];
+        });
+        setHistoryPage(cache.page);
+        setHistoryHasMore(cache.hasMore);
+        setCompletedOrdersLoaded(true);
+        return;
+      }
+    }
+
     setHistoryLoading(true);
     try {
       const offset = page * 10;
@@ -777,12 +814,18 @@ export default function RestaurantDashboard() {
       );
       setOrders(prev => {
         const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+        let newList;
         if (reset) {
           const existingIds = new Set(activeOrders.map(o => o._id));
-          return [...activeOrders, ...data.filter(o => !existingIds.has(o._id))];
+          newList = [...activeOrders, ...data.filter(o => !existingIds.has(o._id))];
+        } else {
+          const existingIds = new Set(prev.map(o => o._id));
+          newList = [...prev, ...data.filter(o => !existingIds.has(o._id))];
         }
-        const existingIds = new Set(prev.map(o => o._id));
-        return [...prev, ...data.filter(o => !existingIds.has(o._id))];
+        // Update cache with all completed orders accumulated so far
+        const allCompleted = newList.filter(o => o.status === 'completed');
+        setHistoryCache(restaurantId, allCompleted, page, data.length === 10);
+        return newList;
       });
       setHistoryHasMore(data.length === 10);
       if (page === 0) setCompletedOrdersLoaded(true);
@@ -792,6 +835,14 @@ export default function RestaurantDashboard() {
       setHistoryLoading(false);
     }
   };
+
+  // After a load-more renders, restore the saved scroll position
+  useLayoutEffect(() => {
+    if (historySavedScroll.current > 0 && historyScrollRef.current) {
+      historyScrollRef.current.scrollTop = historySavedScroll.current;
+      historySavedScroll.current = 0;
+    }
+  });
 
   useEffect(() => {
     if (activeTab !== 'history') return;
@@ -811,6 +862,7 @@ export default function RestaurantDashboard() {
       historyLoadingRef.current = true;
       setHistoryPage(prev => {
         const next = prev + 1;
+        if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
         loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
         return next;
       });
@@ -3431,7 +3483,7 @@ export default function RestaurantDashboard() {
         )}
 
         {activeTab === 'history' && (
-          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto [&>*]:max-w-none">
+          <div ref={historyScrollRef} className="w-full px-3 sm:px-6 py-4 overflow-y-auto [&>*]:max-w-none">
             {/* Initial loading state — only shows on very first load */}
             {historyLoading && orders.filter(o => o.status === 'completed').length === 0 && (
               <div className="flex items-center justify-center py-16 gap-3">
@@ -3449,7 +3501,7 @@ export default function RestaurantDashboard() {
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 {/* Manual refresh — resets cache and re-fetches from server */}
                 <button
-                  onClick={() => { setCompletedOrdersLoaded(false); setHistoryPage(0); setHistoryHasMore(true); }}
+                  onClick={() => { const rid = localStorage.getItem('restaurantId'); if (rid) sessionStorage.removeItem(`historyCache_${rid}`); setCompletedOrdersLoaded(false); setHistoryPage(0); setHistoryHasMore(true); }}
                   className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
                   title="Refresh history"
                 >
@@ -3710,6 +3762,7 @@ export default function RestaurantDashboard() {
                   historyLoadingRef.current = true;
                   const next = historyPage + 1;
                   setHistoryPage(next);
+                  if (historyScrollRef.current) historySavedScroll.current = historyScrollRef.current.scrollTop;
                   loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
                 }}
               >
