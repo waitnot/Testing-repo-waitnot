@@ -96,6 +96,27 @@ export default function StaffManagement({ restaurantId }) {
     } catch (_) {}
   };
 
+  const openPinModal = (staffMember, mode) => {
+    setPinModal({ staff: staffMember, mode });
+    setPinForm({ pin: '', confirmPin: '', adminPin: '', showPasswordField: false });
+    setPinError('');
+  };
+
+  const handleRemovePin = async (staffMember) => {
+    if (!window.confirm(`Remove PIN for ${staffMember.name}? They will need email/password to login.`)) return;
+    try {
+      await axios.post(`/api/staff/restaurant/${restaurantId}/reset-pin`, {
+        staffId: staffMember.id,
+        newPin: null,
+      });
+      showToast(`PIN removed for ${staffMember.name}`);
+      setPinModal(null);
+      await fetchPinStatuses();
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Failed to remove PIN', 'error');
+    }
+  };
+
   const handleSetPin = async () => {
     const { pin, confirmPin } = pinForm;
     if (!/^[0-9]{4,6}$/.test(pin)) { setPinError('PIN must be 4–6 digits'); return; }
