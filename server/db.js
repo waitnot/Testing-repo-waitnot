@@ -754,7 +754,7 @@ export const orderDB = {
     };
   },
   
-  async findByRestaurant(restaurantId, status) {
+  async findByRestaurant(restaurantId, status, { limit = null, offset = 0 } = {}) {
     let whereClause = 'WHERE o.restaurant_id = $1 AND (o.archived IS NULL OR o.archived = false)';
     const params = [restaurantId];
 
@@ -784,6 +784,7 @@ export const orderDB = {
       ${whereClause}
       GROUP BY o.id
       ORDER BY o.created_at DESC
+      ${limit !== null ? `LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}` : ''}
     `, params);
     
     return result.rows.map(row => ({

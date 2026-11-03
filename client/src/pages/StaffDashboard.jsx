@@ -67,7 +67,9 @@ export default function StaffDashboard() {
   // Order history
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const historyLoaded = useRef(false); // cache flag — only fetch once per session
+  const historyLoaded = useRef(false);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(true); // cache flag — only fetch once per session
   const [historySearch, setHistorySearch] = useState('');
 
   // Sales report
@@ -543,13 +545,24 @@ export default function StaffDashboard() {
     }
   };
 
-  const fetchHistory = async (force = false) => {
+  const fetchHistory = async (force = false, page = 0) => {
     // Use cached data unless forced refresh or not yet loaded
-    if (historyLoaded.current && !force) return;
+    if (historyLoaded.current && !force && page === 0) return;
     setHistoryLoading(true);
     try {
-      const { data } = await axios.get(`${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed`);
-      setHistoryOrders(data);
+      const offset = page * 10;
+      const { data } = await axios.get(
+        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=10&offset=${offset}`
+      );
+      if (page === 0 || force) {
+        setHistoryOrders(data);
+      } else {
+        setHistoryOrders(prev => {
+          const existingIds = new Set(prev.map(o => o._id));
+          return [...prev, ...data.filter(o => !existingIds.has(o._id))];
+        });
+      }
+      setHistoryHasMore(data.length === 10);
       historyLoaded.current = true;
     } catch (e) {
       console.error(e);
@@ -2500,7 +2513,7 @@ export default function StaffDashboard() {
                 {historySearch && <button onClick={() => setHistorySearch('')}><X size={14} className="text-gray-400" /></button>}
               </div>
 
-              {historyLoading ? (
+              {historyLoading && historyOrders.length === 0 ? (
                 <div className="flex justify-center py-16">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500"></div>
                 </div>
@@ -2566,6 +2579,38 @@ export default function StaffDashboard() {
                       </div>
                     ))}
                 </div>
+              )}
+
+              {/* Infinite scroll sentinel */}
+              {!historyLoading && historyHasMore && historyOrders.length > 0 && !historySearch && (
+                <div
+                  className="flex items-center justify-center py-5 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors"
+                  onClick={() => { const p = historyPage + 1; setHistoryPage(p); fetchHistory(false, p); }}
+                  ref={el => {
+                    if (!el) return;
+                    const obs = new IntersectionObserver(([entry]) => {
+                      if (entry.isIntersecting) {
+                        obs.disconnect();
+                        const p = historyPage + 1;
+                        setHistoryPage(p);
+                        fetchHistory(false, p);
+                      }
+                    }, { threshold: 0.1 });
+                    obs.observe(el);
+                  }}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  Load more
+                </div>
+              )}
+              {historyLoading && historyOrders.length > 0 && (
+                <div className="flex items-center justify-center py-5 gap-2">
+                  <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-sm text-gray-400">Loading more...</span>
+                </div>
+              )}
+              {!historyHasMore && historyOrders.length > 0 && (
+                <p className="text-center text-xs text-gray-300 py-3">All orders loaded</p>
               )}
             </div>
           )}
@@ -2684,7 +2729,7 @@ export default function StaffDashboard() {
               <button key={tab.id} onClick={() => {
                 setActiveView(tab.id);
                 setSelectedTable(null);
-                if (tab.id === 'history') fetchHistory();
+                if (tab.id === 'history') { setHistoryPage(0); fetchHistory(false, 0); }
                 if (tab.id === 'sales') fetchSales(salesPeriod);
               }}
                 className={`flex-1 py-3 flex flex-col items-center gap-0.5 relative ${active ? 'text-red-500' : 'text-gray-400'}`}>

@@ -500,6 +500,9 @@ export default function RestaurantDashboard() {
   const [orders, setOrders] = useState([]);
   const [completedOrdersLoaded, setCompletedOrdersLoaded] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyPage, setHistoryPage] = useState(0);          // current page (0-based)
+  const [historyHasMore, setHistoryHasMore] = useState(true); // false when server returns < PAGE_SIZE
+  const HISTORY_PAGE_SIZE = 10;
   const [menuVisibilitySaving, setMenuVisibilitySaving] = useState(false);
   const [menuOffMsgDraft, setMenuOffMsgDraft] = useState('');
   const [feedback, setFeedback] = useState([]);
@@ -760,25 +763,39 @@ export default function RestaurantDashboard() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [activeTab]);
 
-  // Load completed orders only on first visit to history tab — cache for session
-  useEffect(() => {
-    if (activeTab !== 'history') return;
-    if (completedOrdersLoaded) return; // already cached — skip fetch
+  // Paginated history load — 10 at a time, more on scroll
+  const loadHistoryPage = async (page, reset = false) => {
     const restaurantId = localStorage.getItem('restaurantId');
     if (!restaurantId) return;
     setHistoryLoading(true);
-    axios.get(`/api/orders/restaurant/${restaurantId}?status=completed`)
-      .then(({ data }) => {
-        setOrders(prev => {
-          const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+    try {
+      const offset = page * 10;
+      const { data } = await axios.get(
+        `/api/orders/restaurant/${restaurantId}?status=completed&limit=10&offset=${offset}`
+      );
+      setOrders(prev => {
+        const activeOrders = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+        if (reset) {
           const existingIds = new Set(activeOrders.map(o => o._id));
-          const newCompleted = data.filter(o => !existingIds.has(o._id));
-          return [...activeOrders, ...newCompleted];
-        });
-        setCompletedOrdersLoaded(true);
-      })
-      .catch(e => console.error('Failed to load completed orders:', e))
-      .finally(() => setHistoryLoading(false));
+          return [...activeOrders, ...data.filter(o => !existingIds.has(o._id))];
+        }
+        const existingIds = new Set(prev.map(o => o._id));
+        return [...prev, ...data.filter(o => !existingIds.has(o._id))];
+      });
+      setHistoryHasMore(data.length === 10);
+      if (page === 0) setCompletedOrdersLoaded(true);
+    } catch (e) {
+      console.error('Failed to load order history:', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    if (completedOrdersLoaded) return; // already loaded first page
+    setHistoryPage(0);
+    loadHistoryPage(0, true);
   }, [activeTab, completedOrdersLoaded]);
 
   // Lock body scroll when Staff Order tab is in order view (POS mode)
@@ -3394,8 +3411,8 @@ export default function RestaurantDashboard() {
 
         {activeTab === 'history' && (
           <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto [&>*]:max-w-none">
-            {/* Loading state */}
-            {historyLoading && (
+            {/* Initial loading state — only shows on very first load */}
+            {historyLoading && orders.filter(o => o.status === 'completed').length === 0 && (
               <div className="flex items-center justify-center py-16 gap-3">
                 <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                 <p className="text-sm text-gray-500">Loading order history...</p>
@@ -3411,7 +3428,7 @@ export default function RestaurantDashboard() {
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 {/* Manual refresh — resets cache and re-fetches from server */}
                 <button
-                  onClick={() => { setCompletedOrdersLoaded(false); }}
+                  onClick={() => { setCompletedOrdersLoaded(false); setHistoryPage(0); setHistoryHasMore(true); }}
                   className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
                   title="Refresh history"
                 >
@@ -3663,7 +3680,38 @@ export default function RestaurantDashboard() {
                 </div>{/* overflow-x-auto */}
               </div>
             )}
-            </>)}
+                        {/* Infinite scroll sentinel — auto-loads next page when scrolled into view */}
+            {!historyLoading && historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
+              <div
+                className="flex items-center justify-center py-6 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors select-none"
+                onClick={() => { const p = historyPage + 1; setHistoryPage(p); loadHistoryPage(p); }}
+                ref={el => {
+                  if (!el) return;
+                  const obs = new IntersectionObserver(([entry]) => {
+                    if (entry.isIntersecting) {
+                      obs.disconnect();
+                      const p = historyPage + 1;
+                      setHistoryPage(p);
+                      loadHistoryPage(p);
+                    }
+                  }, { threshold: 0.1 });
+                  obs.observe(el);
+                }}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                Load more orders
+              </div>
+            )}
+            {historyLoading && orders.filter(o => o.status === 'completed').length > 0 && (
+              <div className="flex items-center justify-center py-6 gap-2">
+                <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-gray-400">Loading more...</span>
+              </div>
+            )}
+            {!historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
+              <p className="text-center text-xs text-gray-300 py-4">All orders loaded</p>
+            )}
+</>)}
           </div>
         )}
 

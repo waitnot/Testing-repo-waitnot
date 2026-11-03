@@ -150,8 +150,12 @@ router.post('/', checkOrderRateLimit, async (req, res) => {
 // Get orders by restaurant
 router.get('/restaurant/:restaurantId', async (req, res) => {
   try {
-    const { status } = req.query;
-    const orders = await orderDB.findByRestaurant(req.params.restaurantId, status);
+    const { status, limit, offset } = req.query;
+    // limit/offset only used for history (status=completed) to enable infinite scroll
+    const pagination = (limit && status === 'completed')
+      ? { limit: Math.min(parseInt(limit) || 10, 100), offset: parseInt(offset) || 0 }
+      : {};
+    const orders = await orderDB.findByRestaurant(req.params.restaurantId, status, pagination);
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });
