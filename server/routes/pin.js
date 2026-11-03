@@ -305,4 +305,46 @@ const STAFF_ROLES = {
   kitchen: { name: 'Kitchen Staff', permissions: { orders: { view: true, edit: true, delete: false }, menu: { view: true, edit: false, delete: false }, staff: { view: false, edit: false, delete: false }, analytics: { view: false }, settings: { view: false, edit: false } } },
 };
 
+// ── POST /api/pin/lookup ─────────────────────────────────────────────────────
+// APK: given staff email, returns profile info (name, role, restaurantName, hasPin)
+// Does NOT return any secret — just enough to show the PIN entry screen
+router.post('/lookup', rateLimit, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email required' });
+
+    const staffResult = await query(
+      `SELECT s.id, s.name, s.role, s.waiter_number, s.restaurant_id,
+              r.name as restaurant_name,
+              (sp.id IS NOT NULL) as has_pin
+       FROM staff s
+       LEFT JOIN staff_pins sp ON sp.staff_id = s.id
+       LEFT JOIN restaurants r ON r.id::text = s.restaurant_id
+       WHERE LOWER(s.email) = LOWER($1) AND s.is_active = true
+       LIMIT 1`,
+      [email.trim()]
+    );
+
+    if (staffResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No active staff found with that email' });
+    }
+
+    const s = staffResult.rows[0];
+    const initials = s.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+
+    res.json({
+      staffId: s.id,
+      name: s.name,
+      role: s.role,
+      waiterNumber: s.waiter_number,
+      restaurantId: s.restaurant_id,
+      restaurantName: s.restaurant_name || 'Restaurant',
+      hasPin: s.has_pin,
+      initials,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
