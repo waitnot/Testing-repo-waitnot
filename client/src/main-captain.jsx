@@ -21,7 +21,7 @@ import StaffPinLogin from './pages/StaffPinLogin';
 //   2. server/routes/appVersion.js        version + versionCode + releaseNotes + downloadUrl
 //   3. client/android/app/build.gradle    versionCode + versionName
 // Never set the server versionCode higher than the APK before the APK is uploaded.
-const CURRENT_VERSION_CODE = 10;
+const CURRENT_VERSION_CODE = 11;
 
 // Trusted domain — only URLs on this origin are allowed as download targets.
 const TRUSTED_ORIGIN = 'https://waitnot.in';
