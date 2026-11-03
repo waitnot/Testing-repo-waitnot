@@ -8,6 +8,7 @@ import FeedbackForm from '../components/FeedbackForm';
 
 export default function QROrder({ orderMode }) {
   const { restaurantId, tableNumber, roomNumber } = useParams();
+  const [menuImages, setMenuImages] = useState({}); // loaded after initial render
   const isRoomMode = orderMode === 'room' || !!roomNumber;
   const isTakeawayMode = orderMode === 'takeaway';
   const isDeliveryMode = orderMode === 'delivery';
@@ -177,6 +178,10 @@ export default function QROrder({ orderMode }) {
     try {
       const { data } = await axios.get(`/api/restaurants/${restaurantId}`);
       setRestaurant(data);
+      // Load images in background — don't block the menu from showing
+      axios.get(`/api/restaurants/${restaurantId}/menu/images`)
+        .then(r => setMenuImages(r.data))
+        .catch(() => {});
       // Apply custom room name if set
       if (isRoomMode && data.features?.roomNames?.[slotNumber]) {
         setSlotLabel(data.features.roomNames[slotNumber]);
@@ -935,7 +940,7 @@ export default function QROrder({ orderMode }) {
                       <div className="item-image w-24 h-24 sm:w-36 sm:h-36 bg-gradient-to-br from-red-400 via-red-500 to-red-600 flex items-center justify-center flex-shrink-0 relative overflow-hidden rounded-l-2xl">
                         {item.image ? (
                           <img 
-                            src={item.image} 
+                            src={menuImages[item._id] || item.image} 
                             alt={item.name} 
                             className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" 
                           />

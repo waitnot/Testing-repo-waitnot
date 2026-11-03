@@ -200,4 +200,25 @@ router.put('/:id/menu-reorder', async (req, res) => {
   }
 });
 
+// ── GET /api/restaurants/:id/menu/images ─────────────────────────────────────
+// Returns ONLY the image field for all menu items of a restaurant.
+// Called once when the menu management page opens — not on every dashboard load.
+router.get('/:id/menu/images', async (req, res) => {
+  try {
+    const { query } = await import('../database/connection.js');
+    const result = await query(
+      `SELECT id, image FROM menu_items
+       WHERE restaurant_id = $1 AND image IS NOT NULL AND image != ''
+       ORDER BY display_order ASC`,
+      [req.params.id]
+    );
+    // Return a map of { menuItemId: imageDataUrl } for easy lookup on frontend
+    const imageMap = {};
+    result.rows.forEach(row => { imageMap[row.id] = row.image; });
+    res.json(imageMap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

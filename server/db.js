@@ -180,7 +180,6 @@ export const restaurantDB = {
                    'category', m.category,
                    'isVeg', m.is_veg,
                    'description', m.description,
-                   'image', m.image,
                    'available', m.available,
                    'displayOrder', m.display_order
                  ) ORDER BY m.display_order ASC NULLS LAST
@@ -227,7 +226,6 @@ export const restaurantDB = {
                    'category', m.category,
                    'isVeg', m.is_veg,
                    'description', m.description,
-                   'image', m.image,
                    'available', m.available,
                    'displayOrder', m.display_order
                  ) ORDER BY m.display_order ASC NULLS LAST
@@ -287,7 +285,6 @@ export const restaurantDB = {
                    'category', m.category,
                    'isVeg', m.is_veg,
                    'description', m.description,
-                   'image', m.image,
                    'available', m.available,
                    'displayOrder', m.display_order
                  ) ORDER BY m.display_order ASC NULLS LAST
@@ -466,7 +463,6 @@ export const restaurantDB = {
                    'category', m.category,
                    'isVeg', m.is_veg,
                    'description', m.description,
-                   'image', m.image,
                    'available', m.available,
                    'displayOrder', m.display_order
                  ) ORDER BY m.display_order ASC NULLS LAST

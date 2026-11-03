@@ -546,7 +546,8 @@ export default function RestaurantDashboard() {
   const [importingMenu, setImportingMenu] = useState(false);
 
   // ── New feature state ──
-  const [storeOnline, setStoreOnline] = useState(true); // will sync from restaurant.features below
+  const [storeOnline, setStoreOnline] = useState(true);
+  const [menuImages, setMenuImages] = useState({}); // { menuItemId: base64 } — loaded lazily when Menu tab opens // will sync from restaurant.features below
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerSearch, setDrawerSearch] = useState('');
   const [topSearch, setTopSearch] = useState('');
@@ -798,6 +799,15 @@ export default function RestaurantDashboard() {
       document.body.style.height = '';
     };
   }, [activeTab]);
+
+  // Fetch menu images lazily — only when Menu tab is open
+  // Images are NOT returned in the main restaurant query (too heavy)
+  const fetchMenuImages = async (restaurantId) => {
+    try {
+      const { data } = await axios.get(`/api/restaurants/${restaurantId}/menu/images`);
+      setMenuImages(data); // { uuid: 'data:image/...' }
+    } catch (_) {}
+  };
 
   const fetchRestaurant = async (id) => {
     try {
@@ -2223,7 +2233,11 @@ export default function RestaurantDashboard() {
           </FeatureGuard>
           <FeatureGuard feature="menuManagement">
             <button
-              onClick={() => setActiveTab('menu')}
+              onClick={() => {
+                setActiveTab('menu');
+                const rid = localStorage.getItem('restaurantId');
+                if (rid) fetchMenuImages(rid);
+              }}
               className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'menu' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
             >
               Menu
@@ -2675,8 +2689,8 @@ export default function RestaurantDashboard() {
                             className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2 hover:bg-gray-100 transition-colors"
                           >
                             <GripVertical size={16} className="text-gray-400 shrink-0 cursor-grab" />
-                            {item.image && (
-                              <img src={item.image} alt={item.name} className="w-10 h-10 rounded object-cover shrink-0"
+                            {(menuImages[item._id] || item.image) && (
+                              <img src={menuImages[item._id] || item.image} alt={item.name} className="w-10 h-10 rounded object-cover shrink-0"
                                 onError={(e) => { e.target.style.display = 'none'; }} />
                             )}
                             <div className="flex-1 min-w-0">
@@ -2753,7 +2767,7 @@ export default function RestaurantDashboard() {
                                   </h3>
                                   <div className="flex gap-2">
                                     <FeatureGuard feature="menuManagement">
-                                      <button onClick={() => { setEditingItem(item); setMenuForm(item); setShowMenuForm(true); }} className="text-blue-500 hover:text-blue-700" title="Edit item">
+                                      <button onClick={() => { setEditingItem(item); setMenuForm({...item, image: menuImages[item._id] || item.image || ''}); setShowMenuForm(true); }} className="text-blue-500 hover:text-blue-700" title="Edit item">
                                         <Edit size={18} />
                                       </button>
                                     </FeatureGuard>
