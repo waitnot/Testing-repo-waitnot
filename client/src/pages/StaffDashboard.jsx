@@ -2640,6 +2640,7 @@ export default function StaffDashboard() {
                   <p className="text-sm">No completed orders yet</p>
                 </div>
               ) : (
+                <>
                 {historySearchMode && !historyLoading && (
                   <p className="text-xs text-gray-400 mb-3">
                     {historySearchResults.length === 0 ? `No results for "${historySearchQuery}"` : `${historySearchResults.length} result${historySearchResults.length !== 1 ? 's' : ''} for "${historySearchQuery}"`}
@@ -2692,6 +2693,8 @@ export default function StaffDashboard() {
                       </div>
                     ))}
                 </div>
+              )}
+                </>
               )}
 
               {/* Stable sentinel — IntersectionObserver wired via useEffect */}
