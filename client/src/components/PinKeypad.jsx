@@ -33,7 +33,7 @@ export default function PinKeypad({
     if (loading) return;
     if (k === 'del') {
       onPin(pin.slice(0, -1));
-    } else if (k === '' ) {
+    } else if (k === '') {
       // empty cell — no action
     } else {
       if (pin.length < maxLen) {
@@ -43,12 +43,10 @@ export default function PinKeypad({
     }
   };
 
-  // Auto-submit when PIN reaches maxLen
-  // Caller can also use the "→" submit button
   const dots = Array.from({ length: maxLen }, (_, i) => (
     <div
       key={i}
-      className={`w-4 h-4 rounded-full border-2 transition-all duration-150 ${
+      className={`w-4 h-4 sm:w-5 sm:h-5 rounded-full border-2 transition-all duration-150 ${
         i < pin.length
           ? 'bg-red-500 border-red-500 scale-110'
           : 'bg-transparent border-gray-300'
@@ -57,12 +55,12 @@ export default function PinKeypad({
   ));
 
   return (
-    <div className="flex flex-col items-center gap-4 select-none w-full max-w-xs mx-auto">
+    <div className="flex flex-col items-center gap-3 sm:gap-4 select-none w-full max-w-xs mx-auto">
       {/* Label */}
       <p className="text-sm font-medium text-gray-500">{label}</p>
 
       {/* PIN dots */}
-      <div className="flex items-center gap-3 py-2">
+      <div className="flex items-center gap-3 sm:gap-4 py-1 sm:py-2">
         {dots}
       </div>
 
@@ -74,7 +72,7 @@ export default function PinKeypad({
       )}
 
       {/* Keypad grid */}
-      <div className="grid grid-cols-3 gap-3 w-full">
+      <div className="grid grid-cols-3 gap-2 sm:gap-3 w-full">
         {KEYS.flat().map((k, idx) => {
           if (k === '') return <div key={idx} />;
 
@@ -84,12 +82,12 @@ export default function PinKeypad({
                 key={idx}
                 onClick={() => handleKey('del')}
                 disabled={loading || pin.length === 0}
-                className="aspect-square flex items-center justify-center rounded-2xl bg-gray-100 text-gray-600 text-lg font-semibold
+                className="min-h-[64px] flex items-center justify-center rounded-2xl bg-gray-100 text-gray-600 text-lg font-semibold
                            active:scale-95 transition-transform disabled:opacity-30
                            hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-red-300"
                 aria-label="Delete"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 5H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10l-7-7 7-7z"/><path d="m13 9 6 6"/><path d="m19 9-6 6"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 5H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10l-7-7 7-7z"/><path d="m13 9 6 6"/><path d="m19 9-6 6"/></svg>
               </button>
             );
           }
@@ -99,7 +97,7 @@ export default function PinKeypad({
               key={idx}
               onClick={() => handleKey(k)}
               disabled={loading}
-              className="aspect-square flex items-center justify-center rounded-2xl bg-white border border-gray-200
+              className="min-h-[64px] flex items-center justify-center rounded-2xl bg-white border border-gray-200
                          text-gray-800 text-2xl font-semibold shadow-sm
                          active:scale-95 active:bg-red-50 active:border-red-300 transition-all
                          hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-red-300
@@ -115,7 +113,7 @@ export default function PinKeypad({
       <button
         onClick={onSubmit}
         disabled={loading || pin.length < 4}
-        className="w-full py-3.5 rounded-2xl bg-red-500 text-white font-bold text-base
+        className="w-full py-3.5 sm:py-4 rounded-2xl bg-red-500 text-white font-bold text-base
                    hover:bg-red-600 active:scale-95 transition-all
                    disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2"
       >
@@ -133,7 +131,7 @@ export default function PinKeypad({
       {onClear && pin.length > 0 && (
         <button
           onClick={onClear}
-          className="text-sm text-gray-400 hover:text-gray-600 underline"
+          className="text-sm text-gray-400 hover:text-gray-600 underline py-1"
         >
           Clear
         </button>

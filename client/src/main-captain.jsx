@@ -21,7 +21,7 @@ import StaffPinLogin from './pages/StaffPinLogin';
 //   2. server/routes/appVersion.js        version + versionCode + releaseNotes + downloadUrl
 //   3. client/android/app/build.gradle    versionCode + versionName
 // Never set the server versionCode higher than the APK before the APK is uploaded.
-const CURRENT_VERSION_CODE = 9;
+const CURRENT_VERSION_CODE = 10;
 
 // Trusted domain — only URLs on this origin are allowed as download targets.
 const TRUSTED_ORIGIN = 'https://waitnot.in';
@@ -218,16 +218,29 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+// Determine launch route: if a cached staff profile exists (Capacitor), go straight to PIN login
+const hasCachedProfile = (() => {
+  try {
+    const raw = localStorage.getItem('cachedStaffProfile');
+    if (!raw) return false;
+    const p = JSON.parse(raw);
+    return !!(p?.staffId && p?.name);
+  } catch {
+    return false;
+  }
+})();
+const launchRoute = hasCachedProfile ? '/staff-pin-login' : '/staff-login';
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
     <HelmetProvider>
       <HashRouter>
         <Routes>
-          <Route path="/" element={<Navigate to="/staff-login" replace />} />
+          <Route path="/" element={<Navigate to={launchRoute} replace />} />
           <Route path="/staff-login" element={<StaffLogin />} />
           <Route path="/staff-pin-login" element={<StaffPinLogin />} />
           <Route path="/staff-dashboard" element={<StaffDashboard />} />
-          <Route path="*" element={<Navigate to="/staff-login" replace />} />
+          <Route path="*" element={<Navigate to={launchRoute} replace />} />
         </Routes>
       </HashRouter>
     </HelmetProvider>

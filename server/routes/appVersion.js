@@ -37,10 +37,10 @@ const router = express.Router();
 
 const APP_VERSION = {
   // ── Increment both on every release ──
-  version:     '1.0.9',
-  versionCode: 9,           // must match APK CURRENT_VERSION_CODE and build.gradle versionCode
+  version:     '1.0.10',
+  versionCode: 10,          // must match APK CURRENT_VERSION_CODE and build.gradle versionCode
 
-  releaseNotes: 'New: PIN login for faster access. New: Staff PIN management. Server moved to waitnot.in for improved performance. Auth system upgraded.',
+  releaseNotes: 'Improvement: Staff profile saved on device — enter email once, then launch goes straight to PIN keypad. Added "Not you? Switch account" to change staff. Improvement: PIN login page fully responsive for phone screens — bigger buttons, larger PIN dots, full-width card.',
 
   // forceUpdate: forces ALL users to update immediately (hides "Remind me later")
   forceUpdate: false,
