@@ -503,6 +503,8 @@ export default function RestaurantDashboard() {
   const [historyPage, setHistoryPage] = useState(0);          // current page (0-based)
   const [historyHasMore, setHistoryHasMore] = useState(true); // false when server returns < PAGE_SIZE
   const HISTORY_PAGE_SIZE = 10;
+  const historySentinelRef = useRef(null);   // ref for IntersectionObserver sentinel
+  const historyLoadingRef  = useRef(false);  // prevents double-fire from observer
   const [menuVisibilitySaving, setMenuVisibilitySaving] = useState(false);
   const [menuOffMsgDraft, setMenuOffMsgDraft] = useState('');
   const [feedback, setFeedback] = useState([]);
@@ -797,6 +799,25 @@ export default function RestaurantDashboard() {
     setHistoryPage(0);
     loadHistoryPage(0, true);
   }, [activeTab, completedOrdersLoaded]);
+
+  // IntersectionObserver wired via useEffect — stable, no new observer on every render
+  useEffect(() => {
+    const el = historySentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      if (historyLoadingRef.current) return;   // already fetching
+      if (!historyHasMore) return;             // no more pages
+      historyLoadingRef.current = true;
+      setHistoryPage(prev => {
+        const next = prev + 1;
+        loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
+        return next;
+      });
+    }, { threshold: 0.1 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [activeTab, historyHasMore]);  // re-wire only when tab changes or hasMore flips
 
   // Lock body scroll when Staff Order tab is in order view (POS mode)
   useEffect(() => {
@@ -3680,26 +3701,24 @@ export default function RestaurantDashboard() {
                 </div>{/* overflow-x-auto */}
               </div>
             )}
-                        {/* Infinite scroll sentinel — auto-loads next page when scrolled into view */}
-            {!historyLoading && historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
-              <div
+                        {/* Infinite scroll sentinel — observed by useEffect, no inline observer */}
+            {historyHasMore && orders.filter(o => o.status === 'completed').length > 0 && (
+              <div ref={historySentinelRef}
                 className="flex items-center justify-center py-6 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors select-none"
-                onClick={() => { const p = historyPage + 1; setHistoryPage(p); loadHistoryPage(p); }}
-                ref={el => {
-                  if (!el) return;
-                  const obs = new IntersectionObserver(([entry]) => {
-                    if (entry.isIntersecting) {
-                      obs.disconnect();
-                      const p = historyPage + 1;
-                      setHistoryPage(p);
-                      loadHistoryPage(p);
-                    }
-                  }, { threshold: 0.1 });
-                  obs.observe(el);
+                onClick={() => {
+                  if (historyLoadingRef.current || !historyHasMore) return;
+                  historyLoadingRef.current = true;
+                  const next = historyPage + 1;
+                  setHistoryPage(next);
+                  loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
                 }}
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                Load more orders
+                {!historyLoading && (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    Load more orders
+                  </>
+                )}
               </div>
             )}
             {historyLoading && orders.filter(o => o.status === 'completed').length > 0 && (

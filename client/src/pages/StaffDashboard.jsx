@@ -69,7 +69,9 @@ export default function StaffDashboard() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyLoaded = useRef(false);
   const [historyPage, setHistoryPage] = useState(0);
-  const [historyHasMore, setHistoryHasMore] = useState(true); // cache flag — only fetch once per session
+  const [historyHasMore, setHistoryHasMore] = useState(true);
+  const historySentinelRef = useRef(null);
+  const historyLoadingRef  = useRef(false); // cache flag — only fetch once per session
   const [historySearch, setHistorySearch] = useState('');
 
   // Sales report
@@ -570,6 +572,26 @@ export default function StaffDashboard() {
       setHistoryLoading(false);
     }
   };
+
+  // Stable IntersectionObserver — wired via useEffect, not inline ref callback
+  useEffect(() => {
+    if (activeView !== 'history') return;
+    const el = historySentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      if (historyLoadingRef.current) return;
+      if (!historyHasMore) return;
+      historyLoadingRef.current = true;
+      setHistoryPage(prev => {
+        const next = prev + 1;
+        fetchHistory(false, next).finally(() => { historyLoadingRef.current = false; });
+        return next;
+      });
+    }, { threshold: 0.1 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [activeView, historyHasMore]);
 
   const fetchSales = async (period = salesPeriod) => {
     setSalesLoading(true);
@@ -2581,26 +2603,24 @@ export default function StaffDashboard() {
                 </div>
               )}
 
-              {/* Infinite scroll sentinel */}
-              {!historyLoading && historyHasMore && historyOrders.length > 0 && !historySearch && (
-                <div
+              {/* Stable sentinel — IntersectionObserver wired via useEffect */}
+              {historyHasMore && historyOrders.length > 0 && !historySearch && (
+                <div ref={historySentinelRef}
                   className="flex items-center justify-center py-5 gap-2 text-sm text-gray-400 cursor-pointer hover:text-red-500 transition-colors"
-                  onClick={() => { const p = historyPage + 1; setHistoryPage(p); fetchHistory(false, p); }}
-                  ref={el => {
-                    if (!el) return;
-                    const obs = new IntersectionObserver(([entry]) => {
-                      if (entry.isIntersecting) {
-                        obs.disconnect();
-                        const p = historyPage + 1;
-                        setHistoryPage(p);
-                        fetchHistory(false, p);
-                      }
-                    }, { threshold: 0.1 });
-                    obs.observe(el);
+                  onClick={() => {
+                    if (historyLoadingRef.current || !historyHasMore) return;
+                    historyLoadingRef.current = true;
+                    const p = historyPage + 1;
+                    setHistoryPage(p);
+                    fetchHistory(false, p).finally(() => { historyLoadingRef.current = false; });
                   }}
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                  Load more
+                  {!historyLoading && (
+                    <>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                      Load more
+                    </>
+                  )}
                 </div>
               )}
               {historyLoading && historyOrders.length > 0 && (
