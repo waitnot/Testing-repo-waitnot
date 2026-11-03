@@ -21,10 +21,10 @@ const isCapacitorApp = typeof window !== 'undefined' && (
 
 // Native apps need a full URL since they don't have a web origin
 if (isCapacitorApp) {
-  baseURL = 'https://waitnot-restaurant1.onrender.com';
+  baseURL = 'https://waitnot.in';
 }
 if (isDesktopApp) {
-  baseURL = 'https://waitnot-restaurant1.onrender.com';
+  baseURL = 'https://waitnot.in';
 }
 
 const isLocalDev = (hostname === 'localhost' || hostname === '127.0.0.1') && !isDesktopApp && !isCapacitorApp;

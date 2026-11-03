@@ -20,7 +20,7 @@ const isCapacitorApp = typeof window !== 'undefined' && (
 // Production server URL — auto-detect based on where the app is running
 // For web deployments (Render, Domain India, etc.), server and client are on the same origin
 const PRODUCTION_SERVER = isCapacitorApp || isDesktopApp
-  ? 'https://waitnot-restaurant1.onrender.com'
+  ? 'https://waitnot.in'
   : currentOrigin;
 
 // Development server URL  
@@ -28,7 +28,7 @@ const DEVELOPMENT_SERVER = 'http://localhost:5001';
 
 // Production frontend URL (for QR codes) — use current origin for web, Render for native
 const PRODUCTION_FRONTEND = isCapacitorApp || isDesktopApp
-  ? 'https://waitnot-restaurant1.onrender.com'
+  ? 'https://waitnot.in'
   : currentOrigin;
 
 // Development frontend URL

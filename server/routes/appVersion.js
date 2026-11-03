@@ -37,10 +37,10 @@ const router = express.Router();
 
 const APP_VERSION = {
   // ── Increment both on every release ──
-  version:     '1.0.8',
-  versionCode: 8,           // must match APK CURRENT_VERSION_CODE and build.gradle versionCode
+  version:     '1.0.9',
+  versionCode: 9,           // must match APK CURRENT_VERSION_CODE and build.gradle versionCode
 
-  releaseNotes: '80mm ESC/POS: 4-column layout, name wrap, correct TOTAL line, CPL setting.',
+  releaseNotes: 'New: PIN login for faster access. New: Staff PIN management. Server moved to waitnot.in for improved performance. Auth system upgraded.',
 
   // forceUpdate: forces ALL users to update immediately (hides "Remind me later")
   forceUpdate: false,
@@ -50,7 +50,7 @@ const APP_VERSION = {
   minimumSupportedVersionCode: 1,
 
   // Direct HTTPS URL to the signed APK — must be the same trusted production domain.
-  downloadUrl: 'https://waitnot-restaurant1.onrender.com/downloads/waitnot-captain.apk',
+  downloadUrl: 'https://waitnot.in/downloads/waitnot-captain.apk',
 
   // Optional metadata (used by future clients; ignored by current APK versions)
   releaseDate: new Date().toISOString().split('T')[0],

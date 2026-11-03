@@ -6,14 +6,14 @@ import './index.css';
 
 // Force production API for APK - must be set before any imports that use axios
 import axios from 'axios';
-axios.defaults.baseURL = 'https://waitnot-restaurant1.onrender.com';
+axios.defaults.baseURL = 'https://waitnot.in';
 
-// Wake server immediately on app launch — Render free tier sleeps after inactivity.
-// Fire-and-forget: doesn't block rendering, just gets the server warming up ASAP.
-fetch('https://waitnot-restaurant1.onrender.com/health').catch(() => {});
+// Wake server on app launch to ensure connection is ready
+fetch('https://waitnot.in/health').catch(() => {});
 
 import StaffLogin from './pages/StaffLogin';
 import StaffDashboard from './pages/StaffDashboard';
+import StaffPinLogin from './pages/StaffPinLogin';
 
 // ─── Auto-Update ────────────────────────────────────────────────────────────
 // RELEASE CHECKLIST — bump ALL of these on every release:
@@ -21,10 +21,10 @@ import StaffDashboard from './pages/StaffDashboard';
 //   2. server/routes/appVersion.js        version + versionCode + releaseNotes + downloadUrl
 //   3. client/android/app/build.gradle    versionCode + versionName
 // Never set the server versionCode higher than the APK before the APK is uploaded.
-const CURRENT_VERSION_CODE = 8;
+const CURRENT_VERSION_CODE = 9;
 
 // Trusted domain — only URLs on this origin are allowed as download targets.
-const TRUSTED_ORIGIN = 'https://waitnot-restaurant1.onrender.com';
+const TRUSTED_ORIGIN = 'https://waitnot.in';
 
 let _updateDialogVisible = false;  // prevent stacking multiple dialogs
 let _checkInProgress     = false;  // prevent concurrent fetch calls
@@ -225,6 +225,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Routes>
           <Route path="/" element={<Navigate to="/staff-login" replace />} />
           <Route path="/staff-login" element={<StaffLogin />} />
+          <Route path="/staff-pin-login" element={<StaffPinLogin />} />
           <Route path="/staff-dashboard" element={<StaffDashboard />} />
           <Route path="*" element={<Navigate to="/staff-login" replace />} />
         </Routes>

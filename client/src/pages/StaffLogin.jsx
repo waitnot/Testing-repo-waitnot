@@ -12,7 +12,7 @@ const _isLocalDev = typeof window !== 'undefined' &&
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
   !_isCapacitor;
 const SERVER_URL = _isCapacitor
-  ? 'https://waitnot-restaurant1.onrender.com'
+  ? 'https://waitnot.in'
   : _isLocalDev
     ? 'http://localhost:5001'
     : window.location.origin;

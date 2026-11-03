@@ -10,7 +10,7 @@ const _isLocalDev = typeof window !== 'undefined' &&
   !_isCapacitor && !_isElectron;
 
 export const API_BASE_URL = (_isCapacitor || _isElectron)
-  ? 'https://waitnot-restaurant1.onrender.com'
+  ? 'https://waitnot.in'
   : _isLocalDev
     ? 'http://localhost:5001'
     : window.location.origin;

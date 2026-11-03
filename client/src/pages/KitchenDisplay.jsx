@@ -9,7 +9,7 @@ import io from 'socket.io-client';
 import { secureGet } from '../utils/secureStorage.js';
 
 // ─── API URL ─────────────────────────────────────────────────────────────────
-const PRODUCTION_URL = 'https://waitnot-restaurant1.onrender.com';
+const PRODUCTION_URL = 'https://waitnot.in';
 const _isCapacitor = typeof window !== 'undefined' && (
   window.Capacitor?.isNativePlatform?.() ||
   window.location?.protocol === 'capacitor:'
