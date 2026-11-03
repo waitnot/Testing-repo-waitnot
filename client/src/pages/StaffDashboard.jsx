@@ -569,6 +569,30 @@ export default function StaffDashboard() {
     } catch {}
   };
 
+  // Search function — fetches directly from server on Enter key
+  const runStaffHistorySearch = async (query) => {
+    const q = (query || '').trim();
+    setHistorySearchQuery(q);
+    setHistoryPage(0);
+    setHistoryHasMore(true);
+    setHistoryOrders([]);
+    historyLoaded.current = false;
+    setHistoryLoading(true);
+    try {
+      const searchParam = q ? `&search=${encodeURIComponent(q)}` : '';
+      const { data } = await axios.get(
+        `${API}/api/orders/restaurant/${staff.restaurant_id}?status=completed&limit=10&offset=0${searchParam}`
+      );
+      setHistoryOrders(data);
+      setHistoryHasMore(data.length === 10);
+      if (!q) historyLoaded.current = true;
+    } catch (e) {
+      console.error('Staff history search failed:', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   const fetchHistory = async (force = false, page = 0, searchQ = '') => {
     // On first load (page 0, not forced), check sessionStorage cache
     if (!force && page === 0) {
@@ -2581,22 +2605,23 @@ export default function StaffDashboard() {
               <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-4">
                 <Search size={14} className="text-gray-400 shrink-0" />
                 <input value={historySearch}
-                  onChange={e => {
-                    const val = e.target.value;
-                    setHistorySearch(val);
-                    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-                    searchDebounceRef.current = setTimeout(() => {
-                      const q = val.trim();
-                      setHistorySearchQuery(q);
-                      historyLoaded.current = false;
-                      setHistoryPage(0);
-                      setHistoryHasMore(true);
-                      setHistoryOrders([]);
-                      fetchHistory(true, 0, q);
-                    }, 400);
+                  onChange={e => setHistorySearch(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      runStaffHistorySearch(historySearch);
+                    }
+                    if (e.key === 'Escape') {
+                      setHistorySearch('');
+                      runStaffHistorySearch('');
+                    }
                   }}
-                  placeholder="Search #, amount, name, phone, item..." className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
-                {historySearch && <button onClick={() => setHistorySearch('')}><X size={14} className="text-gray-400" /></button>}
+                  placeholder="Search then press Enter (#, name, amount, item...)" className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
+                {historySearch && (
+                  <button onClick={() => { setHistorySearch(''); runStaffHistorySearch(''); }}>
+                    <X size={14} className="text-gray-400" />
+                  </button>
+                )}
               </div>
 
               {historyLoading && historyOrders.length === 0 ? (

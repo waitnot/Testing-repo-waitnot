@@ -847,6 +847,48 @@ export default function RestaurantDashboard() {
     }
   });
 
+  // Dedicated search function — bypasses the completedOrdersLoaded gate entirely
+  const runHistorySearch = async (query) => {
+    const q = (query || '').trim();
+    const restaurantId = localStorage.getItem('restaurantId');
+    if (!restaurantId) return;
+    setHistorySearchQuery(q);
+    setHistoryPage(0);
+    setHistoryHasMore(true);
+    // Clear only completed orders from state (keep active orders)
+    setOrders(prev => prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled'));
+    setCompletedOrdersLoaded(false);
+    // Fetch directly — do not rely on useEffect
+    setHistoryLoading(true);
+    try {
+      const searchParam = q ? `&search=${encodeURIComponent(q)}` : '';
+      const { data } = await axios.get(
+        `/api/orders/restaurant/${restaurantId}?status=completed&limit=10&offset=0${searchParam}`
+      );
+      setOrders(prev => {
+        const active = prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled');
+        const ids = new Set(active.map(o => o._id));
+        return [...active, ...data.filter(o => !ids.has(o._id))];
+      });
+      setHistoryHasMore(data.length === 10);
+      setHistoryPage(0);
+      // Only cache when not searching (cache full history, not filtered results)
+      if (!q) {
+        const rid = restaurantId;
+        setCompletedOrdersLoaded(true);
+        setOrders(prev => {
+          const completed = prev.filter(o => o.status === 'completed');
+          if (typeof setHistoryCache === 'function') setHistoryCache(rid, completed, 0, data.length === 10);
+          return prev;
+        });
+      }
+    } catch (e) {
+      console.error('Search failed:', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab !== 'history') return;
     if (completedOrdersLoaded) return; // already loaded first page
@@ -865,7 +907,7 @@ export default function RestaurantDashboard() {
       historyLoadingRef.current = true;
       setHistoryPage(prev => {
         const next = prev + 1;
-        loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
+        loadHistoryPage(next, false, historySearchQuery).finally(() => { historyLoadingRef.current = false; });
         return next;
       });
     }, { threshold: 0.1 });
@@ -3503,7 +3545,7 @@ export default function RestaurantDashboard() {
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 {/* Manual refresh — resets cache and re-fetches from server */}
                 <button
-                  onClick={() => { const rid = localStorage.getItem('restaurantId'); if (rid) sessionStorage.removeItem(`historyCache_${rid}`); setCompletedOrdersLoaded(false); setHistoryPage(0); setHistoryHasMore(true); }}
+                  onClick={() => { const rid = localStorage.getItem('restaurantId'); if (rid) sessionStorage.removeItem(`historyCache_${rid}`); setHistorySearch(''); setHistorySearchQuery(''); setCompletedOrdersLoaded(false); setHistoryPage(0); setHistoryHasMore(true); }}
                   className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-500 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
                   title="Refresh history"
                 >
@@ -3605,27 +3647,29 @@ export default function RestaurantDashboard() {
                   <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="Search #, amount, name, phone, address, item..."
+                    placeholder="Search #, amount, name, phone, address, item... (Enter)"
                     value={historySearch || ''}
-                    onChange={e => {
-                      const val = e.target.value;
-                      setHistorySearch(val);
-                      // Debounce: wait 400ms after typing stops, then search server
-                      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-                      searchDebounceRef.current = setTimeout(() => {
-                        const q = val.trim();
-                        setHistorySearchQuery(q);
-                        // Reset pagination and fetch from server with search
-                        setHistoryPage(0);
-                        setHistoryHasMore(true);
-                        setCompletedOrdersLoaded(false);
-                        setOrders(prev => prev.filter(o => o.status !== 'completed' && o.status !== 'cancelled'));
-                        loadHistoryPage(0, true, q);
-                        setCompletedOrdersLoaded(true);
-                      }, 400);
+                    onChange={e => setHistorySearch(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        runHistorySearch(historySearch);
+                      }
+                      if (e.key === 'Escape') {
+                        setHistorySearch('');
+                        runHistorySearch('');
+                      }
                     }}
-                    className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                    className="w-full pl-9 pr-8 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                   />
+                  {historySearch && (
+                    <button
+                      onClick={() => { setHistorySearch(''); runHistorySearch(''); }}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -3770,7 +3814,7 @@ export default function RestaurantDashboard() {
                   historyLoadingRef.current = true;
                   const next = historyPage + 1;
                   setHistoryPage(next);
-                  loadHistoryPage(next).finally(() => { historyLoadingRef.current = false; });
+                  loadHistoryPage(next, false, historySearchQuery).finally(() => { historyLoadingRef.current = false; });
                 }}
               >
                 {!historyLoading && (
