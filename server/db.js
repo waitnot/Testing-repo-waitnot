@@ -650,41 +650,7 @@ export const restaurantDB = {
 // Order operations
 export const orderDB = {
   async findAll() {
-    // Server-side full-text search
-    if (search && search.trim()) {
-      const q = search.trim();
-      const isNumeric = /^\d+(\.\d+)?$/.test(q);
-      if (isNumeric) {
-        const num = parseFloat(q);
-        params.push(num);
-        const np = params.length;
-        params.push('%' + q + '%');
-        const pp = params.length;
-        whereClause += ` AND (
-          o.order_number = $${np} OR
-          o.invoice_number = $${np} OR
-          o.table_number = $${np} OR
-          o.room_number = $${np} OR
-          o.customer_phone LIKE $${pp} OR
-          CAST(o.total_amount AS TEXT) LIKE $${pp}
-        )`;
-      } else {
-        params.push('%' + q.toLowerCase() + '%');
-        const lp = params.length;
-        whereClause += ` AND (
-          LOWER(o.customer_name) LIKE $${lp} OR
-          LOWER(o.customer_phone) LIKE $${lp} OR
-          LOWER(COALESCE(o.delivery_address, '')) LIKE $${lp} OR
-          LOWER(o.order_type) LIKE $${lp} OR
-          EXISTS (
-            SELECT 1 FROM order_items oi2
-            WHERE oi2.order_id = o.id AND LOWER(oi2.name) LIKE $${lp}
-          )
-        )`;
-      }
-    }
-
-    const result = await query(\`
+    const result = await query(`
       SELECT o.*, 
              COALESCE(
                json_agg(
@@ -797,6 +763,35 @@ export const orderDB = {
     } else if (status) {
       whereClause += ' AND o.status = $2';
       params.push(status);
+    }
+
+
+    // Server-side search
+    if (search && search.trim()) {
+      const q = search.trim();
+      const isNum = /^[0-9]+(\.[0-9]+)?$/.test(q);
+      if (isNum) {
+        const n = parseFloat(q);
+        params.push(n);
+        const np = params.length;
+        params.push('%' + q + '%');
+        const pp = params.length;
+        whereClause += ' AND (o.order_number=$' + np +
+          ' OR o.invoice_number=$' + np +
+          ' OR o.table_number=$' + np +
+          ' OR o.room_number=$' + np +
+          ' OR o.customer_phone LIKE $' + pp +
+          ' OR CAST(o.total_amount AS TEXT) LIKE $' + pp + ')';
+      } else {
+        params.push('%' + q.toLowerCase() + '%');
+        const lp = params.length;
+        whereClause += ' AND (' +
+          'LOWER(o.customer_name) LIKE $' + lp +
+          ' OR LOWER(COALESCE(o.customer_phone,\'\')) LIKE $' + lp +
+          ' OR LOWER(COALESCE(o.delivery_address,\'\')) LIKE $' + lp +
+          ' OR LOWER(o.order_type) LIKE $' + lp +
+          ' OR EXISTS(SELECT 1 FROM order_items oi2 WHERE oi2.order_id=o.id AND LOWER(oi2.name) LIKE $' + lp + '))';
+      }
     }
 
     const result = await query(`
