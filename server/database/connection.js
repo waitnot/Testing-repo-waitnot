@@ -300,6 +300,34 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(restaurant_id, phone) WHERE phone IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(restaurant_id, LOWER(name))`);
 
+    // ── Seed customers from existing completed orders (one-time, idempotent) ─
+    await client.query(`
+      INSERT INTO customers (restaurant_id, name, phone, address, order_count, last_order_at)
+      SELECT
+        o.restaurant_id,
+        o.customer_name,
+        NULLIF(TRIM(o.customer_phone), ''),
+        NULLIF(TRIM(o.delivery_address), ''),
+        COUNT(*),
+        MAX(o.created_at)
+      FROM orders o
+      WHERE o.order_type IN ('delivery', 'takeaway')
+        AND o.customer_name IS NOT NULL
+        AND o.customer_name != ''
+        AND o.customer_name NOT LIKE 'Waiter%'
+        AND o.customer_name NOT LIKE 'Guest%'
+        AND LENGTH(TRIM(o.customer_name)) > 1
+        AND NOT EXISTS (
+          SELECT 1 FROM customers c
+          WHERE c.restaurant_id = o.restaurant_id
+            AND (
+              (c.phone IS NOT NULL AND c.phone != '' AND c.phone = NULLIF(TRIM(o.customer_phone),''))
+              OR (LOWER(c.name) = LOWER(o.customer_name) AND (c.phone IS NULL OR c.phone = ''))
+            )
+        )
+      GROUP BY o.restaurant_id, o.customer_name, o.customer_phone, o.delivery_address
+    `).catch(() => {}); // ignore if already seeded
+
     // ── Phase 2: Staff username + PIN auth ───────────────────────────────────
     // Add username column to staff (nullable for backward compat)
     await client.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS username VARCHAR(50)`);
