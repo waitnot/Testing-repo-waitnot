@@ -218,6 +218,20 @@ export default function StaffDashboard() {
     if (!staffData || !token) { navigate('/staff-login'); return; }
     const s = JSON.parse(staffData);
     setStaff(s);
+
+    // Immediately refresh staff record from server to get up-to-date permissions.
+    // Run in background — don't block the UI. Updates staff state + localStorage.
+    axios.get(`${_isCapacitor ? 'https://waitnot.in' : ''}/api/staff/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(({ data }) => {
+      if (data && data.id) {
+        const fresh = { ...s, ...data };
+        setStaff(fresh);
+        localStorage.setItem('staffData', JSON.stringify(fresh));
+        try { secureSet('staffData', JSON.stringify(fresh)).catch(() => {}); } catch (_) {}
+      }
+    }).catch(() => {}); // silently ignore — stale data still works
+
     // Restore active table session after refresh
     const savedTable = sessionStorage.getItem('staff_selectedTable');
     const savedContext = sessionStorage.getItem('staff_orderContext');

@@ -637,6 +637,30 @@ router.post('/restaurant/:restaurantId/reset-pin', async (req, res) => {
   }
 });
 
+// GET /api/staff/me — returns current staff with fresh permissions from DB
+// Used by StaffDashboard to refresh permissions on load without forcing re-login
+router.get('/me', verifyStaffToken, async (req, res) => {
+  try {
+    const staffResult = await query(
+      'SELECT * FROM staff WHERE id = $1 AND is_active = true',
+      [req.staff.id]
+    );
+    if (staffResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
+    const staff = staffResult.rows[0];
+    const effectivePerms = getEffectivePermissions(staff);
+    const { password: _, ...staffData } = staff;
+    res.json({
+      ...staffData,
+      permissions: effectivePerms,
+      roleDetails: { ...(STAFF_ROLES[staff.role] || {}), permissions: effectivePerms }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get available roles
 router.get('/roles', (req, res) => {
   res.json(STAFF_ROLES);
