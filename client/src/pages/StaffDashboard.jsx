@@ -58,6 +58,24 @@ const SOCKET_URL = _isCapacitor
 export default function StaffDashboard() {
   const navigate = useNavigate();
   const [staff, setStaff] = useState(null);
+
+  // ── Permission helper ──────────────────────────────────────────────────────
+  // Returns true if staff has the given permission. Reads from DB permissions
+  // (stored in staff.permissions) so restaurant changes take effect immediately.
+  const can = (resource, action = 'view') => {
+    if (!staff) return false;
+    const perms = staff.permissions;
+    if (perms && typeof perms === 'object' && Object.keys(perms).length > 0) {
+      return Boolean(perms[resource]?.[action]);
+    }
+    // Fall back to role defaults if no custom permissions set
+    const DEFAULTS = {
+      manager: { orders:{view:true,edit:true,delete:true}, menu:{view:true,edit:true,delete:true}, staff:{view:true,edit:true,delete:true}, analytics:{view:true}, settings:{view:true,edit:true}, history:{view:true}, discounts:{view:true,edit:true} },
+      waiter:  { orders:{view:true,edit:true,delete:false}, menu:{view:true,edit:false,delete:false}, staff:{view:false,edit:false,delete:false}, analytics:{view:false}, settings:{view:false,edit:false}, history:{view:true}, discounts:{view:false,edit:false} },
+      kitchen: { orders:{view:true,edit:true,delete:false}, menu:{view:true,edit:false,delete:false}, staff:{view:false,edit:false,delete:false}, analytics:{view:false}, settings:{view:false,edit:false}, history:{view:false}, discounts:{view:false,edit:false} },
+    };
+    return Boolean(DEFAULTS[staff.role]?.[resource]?.[action]);
+  };
   const [restaurant, setRestaurant] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2115,7 +2133,7 @@ export default function StaffDashboard() {
           )}
 
           {/* SETTINGS */}
-          {activeView === 'settings' && (
+          {activeView === 'settings' && can('settings') && (
             <div className="p-4 sm:p-6 max-w-lg overflow-y-auto flex-1 pb-20">
               <div className="bg-white rounded-2xl shadow-sm p-6 mb-6">
                 <div className="flex items-center gap-3 mb-6">
@@ -2598,7 +2616,7 @@ export default function StaffDashboard() {
           )}
 
           {/* ORDER HISTORY */}
-          {activeView === 'history' && (
+          {activeView === 'history' && can('history') && (
             <div ref={historyScrollRef} className="p-4 sm:p-6 overflow-y-auto flex-1 pb-20">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-gray-800 text-lg">Order History</h2>
@@ -2731,7 +2749,7 @@ export default function StaffDashboard() {
           )}
 
           {/* SALES REPORT */}
-          {activeView === 'sales' && (
+          {activeView === 'sales' && can('analytics') && (
             <div className="p-4 sm:p-6 overflow-y-auto flex-1 pb-20">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-gray-800 text-lg flex items-center gap-2"><TrendingUp size={20} className="text-red-500" /> Sales Report</h2>
@@ -2831,13 +2849,13 @@ export default function StaffDashboard() {
         {/* Bottom navigation — all screens */}
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-30">
           {[
-            { id: 'tables', label: 'Tables', icon: UtensilsCrossed },
-            { id: 'running', label: 'Orders', icon: ClipboardList, badge: totalRunningCount },
-            { id: 'history', label: 'History', icon: History },
-            { id: 'sales', label: 'Sales', icon: TrendingUp },
-            { id: 'profile', label: 'Profile', icon: User },
-            ...(_isIOS ? [] : [{ id: 'settings', label: 'Settings', icon: Settings }]),
-          ].map(tab => {
+            { id: 'tables',   label: 'Tables',   icon: UtensilsCrossed },
+            { id: 'running',  label: 'Orders',   icon: ClipboardList, badge: totalRunningCount },
+            can('history')  && { id: 'history',  label: 'History',  icon: History },
+            can('analytics') && { id: 'sales',   label: 'Sales',    icon: TrendingUp },
+            { id: 'profile',  label: 'Profile',  icon: User },
+            ...(_isIOS ? [] : [can('settings') ? { id: 'settings', label: 'Settings', icon: Settings } : null]),
+          ].filter(Boolean).map(tab => {
             const Icon = tab.icon;
             const active = activeView === tab.id;
             return (

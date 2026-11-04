@@ -77,17 +77,21 @@ const verifyStaffToken = async (req, res, next) => {
   }
 };
 
+// Helper: get effective permissions (DB column > role defaults)
+function getEffectivePermissions(staff) {
+  let perms = staff.permissions;
+  if (typeof perms === 'string') { try { perms = JSON.parse(perms); } catch { perms = null; } }
+  if (perms && typeof perms === 'object' && Object.keys(perms).length > 0) return perms;
+  return STAFF_ROLES[staff.role]?.permissions || {};
+}
+
 // Check permissions middleware
 const checkPermission = (resource, action) => {
   return (req, res, next) => {
-    const staff = req.staff;
-    const rolePermissions = STAFF_ROLES[staff.role]?.permissions || {};
-    const resourcePermissions = rolePermissions[resource] || {};
-    
-    if (!resourcePermissions[action]) {
+    const effectivePerms = getEffectivePermissions(req.staff);
+    if (!effectivePerms[resource]?.[action]) {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
-    
     next();
   };
 };
@@ -250,12 +254,13 @@ router.post('/login', async (req, res) => {
     
     // Remove password from response
     const { password: _, ...staffData } = staff;
-    
+    const effectivePerms = getEffectivePermissions(staff);
     res.json({
       token,
       staff: {
         ...staffData,
-        roleDetails: STAFF_ROLES[staff.role]
+        permissions: effectivePerms,
+        roleDetails: { ...(STAFF_ROLES[staff.role] || {}), permissions: effectivePerms }
       }
     });
   } catch (error) {
@@ -669,6 +674,40 @@ router.put('/change-password', verifyStaffToken, async (req, res) => {
   } catch (error) {
     console.error('Error changing password:', error);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// ── PUT /api/staff/restaurant/:restaurantId/staff/:id/permissions ────────────
+// Restaurant manager updates permissions for a specific staff member
+router.put('/restaurant/:restaurantId/staff/:id/permissions', async (req, res) => {
+  try {
+    const { id, restaurantId } = req.params;
+    const { permissions } = req.body;
+    if (!permissions || typeof permissions !== 'object') {
+      return res.status(400).json({ error: 'permissions object required' });
+    }
+    // Validate permission structure
+    const allowedResources = ['orders', 'menu', 'staff', 'analytics', 'settings', 'history', 'discounts'];
+    const allowedActions = ['view', 'edit', 'delete'];
+    const validated = {};
+    for (const [resource, actions] of Object.entries(permissions)) {
+      if (!allowedResources.includes(resource)) continue;
+      validated[resource] = {};
+      for (const [action, allowed] of Object.entries(actions)) {
+        if (!allowedActions.includes(action)) continue;
+        validated[resource][action] = Boolean(allowed);
+      }
+    }
+    const result = await query(
+      `UPDATE staff SET permissions = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND restaurant_id = $3
+       RETURNING id, name, role, permissions`,
+      [JSON.stringify(validated), id, restaurantId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Staff not found' });
+    res.json({ success: true, staff: result.rows[0], permissions: validated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

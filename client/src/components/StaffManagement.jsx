@@ -33,7 +33,11 @@ export default function StaffManagement({ restaurantId }) {
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
   // PIN management
-  const [pinModal, setPinModal] = useState(null);   // { staff, mode: 'set'|'reset' }
+  const [pinModal, setPinModal] = useState(null);
+  // Permissions editor
+  const [permModal, setPermModal] = useState(null); // { staff }
+  const [permLoading, setPermLoading] = useState(false);
+  const [permEdit, setPermEdit] = useState({}); // { resource: { action: bool } }   // { staff, mode: 'set'|'reset' }
   const [pinStatus, setPinStatus] = useState({});   // { [staffId]: { hasPin, isLocked } }
   const [pinForm, setPinForm] = useState({ pin: '', confirmPin: '', adminPin: '' });
   const [pinLoading, setPinLoading] = useState(false);
@@ -114,6 +118,44 @@ export default function StaffManagement({ restaurantId }) {
       await fetchPinStatuses();
     } catch (e) {
       showToast(e.response?.data?.error || 'Failed to remove PIN', 'error');
+    }
+  };
+
+  const openPermModal = (staffMember) => {
+    // Start with staff's current DB permissions, fall back to role defaults
+    const ROLE_DEFAULTS = {
+      manager: { orders:{view:true,edit:true,delete:true}, menu:{view:true,edit:true,delete:true}, staff:{view:true,edit:true,delete:true}, analytics:{view:true}, settings:{view:true,edit:true}, history:{view:true}, discounts:{view:true,edit:true} },
+      waiter:  { orders:{view:true,edit:true,delete:false}, menu:{view:true,edit:false,delete:false}, staff:{view:false,edit:false,delete:false}, analytics:{view:false}, settings:{view:false,edit:false}, history:{view:true}, discounts:{view:false,edit:false} },
+      kitchen: { orders:{view:true,edit:true,delete:false}, menu:{view:true,edit:false,delete:false}, staff:{view:false,edit:false,delete:false}, analytics:{view:false}, settings:{view:false,edit:false}, history:{view:false}, discounts:{view:false,edit:false} },
+    };
+    const base = ROLE_DEFAULTS[staffMember.role] || ROLE_DEFAULTS.waiter;
+    const current = (staffMember.permissions && Object.keys(staffMember.permissions).length > 0)
+      ? staffMember.permissions
+      : base;
+    // Merge base with current so all resources are present
+    const merged = {};
+    for (const [res, actions] of Object.entries(base)) {
+      merged[res] = { ...actions, ...(current[res] || {}) };
+    }
+    setPermEdit(merged);
+    setPermModal({ staff: staffMember });
+  };
+
+  const savePermissions = async () => {
+    if (!permModal) return;
+    setPermLoading(true);
+    try {
+      await axios.put(
+        `/api/staff/restaurant/${restaurantId}/staff/${permModal.staff.id}/permissions`,
+        { permissions: permEdit }
+      );
+      showToast(`Permissions updated for ${permModal.staff.name}`);
+      setPermModal(null);
+      await fetchStaff(); // refresh list
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Failed to update permissions', 'error');
+    } finally {
+      setPermLoading(false);
     }
   };
 
@@ -355,6 +397,13 @@ export default function StaffManagement({ restaurantId }) {
                     <Edit size={16} />
                   </button>
                   <button
+                    onClick={() => openPermModal(staffMember)}
+                    className="p-1 rounded transition-colors text-purple-500 hover:text-purple-700"
+                    title="Edit permissions"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  </button>
+                  <button
                     onClick={() => openPinModal(staffMember, pinStatus[staffMember.id]?.hasPin ? 'reset' : 'set')}
                     className={`p-1 rounded transition-colors ${pinStatus[staffMember.id]?.hasPin ? 'text-green-600 hover:text-green-800' : 'text-gray-400 hover:text-orange-500'}`}
                     title={pinStatus[staffMember.id]?.hasPin ? 'PIN set — click to reset' : 'No PIN — click to set'}
@@ -412,16 +461,20 @@ export default function StaffManagement({ restaurantId }) {
               </div>
 
               {/* Permissions Preview */}
-              <div className="mt-4 pt-4 border-t">
-                <div className="text-xs text-gray-600 mb-2">Permissions:</div>
+              <div className="mt-3 pt-3 border-t">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-gray-500 font-medium">Permissions</span>
+                  <button onClick={() => openPermModal(staffMember)}
+                    className="text-xs text-purple-500 hover:text-purple-700 font-medium">Edit</button>
+                </div>
                 <div className="flex flex-wrap gap-1">
-                  {staffMember.roleDetails?.permissions && Object.entries(staffMember.roleDetails.permissions).map(([resource, perms]) => (
-                    <div key={resource} className="text-xs">
-                      {Object.entries(perms).some(([_, allowed]) => allowed) && (
-                        <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">
-                          {resource}
-                        </span>
-                      )}
+                  {Object.entries(staffMember.permissions && Object.keys(staffMember.permissions).length > 0
+                    ? staffMember.permissions
+                    : staffMember.roleDetails?.permissions || {}
+                  ).map(([res, perms]) => (
+                    <div key={res} className="flex items-center gap-0.5">
+                      {perms.view && <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px]">{res}</span>}
+                      {perms.edit && <span className="bg-green-50 text-green-600 px-1.5 py-0.5 rounded text-[10px]">✎</span>}
                     </div>
                   ))}
                 </div>
@@ -608,6 +661,77 @@ export default function StaffManagement({ restaurantId }) {
       )}
 
       {/* Confirm Modal */}
+      {/* Permissions Editor Modal */}
+      {permModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white px-6 pt-6 pb-3 border-b border-gray-100">
+              <h2 className="text-lg font-bold text-gray-900">Edit Permissions</h2>
+              <p className="text-sm text-gray-500 mt-0.5">{permModal.staff.name} · <span className="capitalize">{permModal.staff.role}</span></p>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              {[
+                { key: 'orders',    label: 'Orders',    actions: ['view','edit','delete'] },
+                { key: 'menu',      label: 'Menu',      actions: ['view','edit','delete'] },
+                { key: 'history',   label: 'Order History', actions: ['view'] },
+                { key: 'analytics', label: 'Analytics', actions: ['view'] },
+                { key: 'staff',     label: 'Staff',     actions: ['view','edit','delete'] },
+                { key: 'discounts', label: 'Discounts', actions: ['view','edit'] },
+                { key: 'settings',  label: 'Settings',  actions: ['view','edit'] },
+              ].map(({ key, label, actions }) => (
+                <div key={key} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                  <span className="text-sm font-medium text-gray-700 w-32">{label}</span>
+                  <div className="flex items-center gap-3">
+                    {actions.map(action => (
+                      <label key={action} className="flex items-center gap-1.5 cursor-pointer select-none">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            checked={permEdit[key]?.[action] || false}
+                            onChange={e => {
+                              const val = e.target.checked;
+                              setPermEdit(prev => {
+                                const updated = { ...prev, [key]: { ...prev[key], [action]: val } };
+                                // If edit/delete enabled, view must also be enabled
+                                if ((action === 'edit' || action === 'delete') && val) {
+                                  updated[key].view = true;
+                                }
+                                // If view disabled, disable edit and delete too
+                                if (action === 'view' && !val) {
+                                  updated[key] = { ...updated[key], edit: false, delete: false };
+                                }
+                                return updated;
+                              });
+                            }}
+                            className="sr-only peer"
+                          />
+                          <div className="w-4 h-4 border-2 border-gray-300 rounded peer-checked:bg-purple-500 peer-checked:border-purple-500 flex items-center justify-center">
+                            {permEdit[key]?.[action] && (
+                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
+                            )}
+                          </div>
+                        </div>
+                        <span className="text-xs text-gray-500 capitalize">{action}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3 px-6 pb-6 pt-2">
+              <button onClick={() => setPermModal(null)}
+                className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={savePermissions} disabled={permLoading}
+                className="flex-1 py-2.5 bg-purple-500 text-white rounded-xl text-sm font-semibold hover:bg-purple-600 disabled:opacity-40">
+                {permLoading ? 'Saving…' : 'Save Permissions'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PIN Management Modal */}
       {pinModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
