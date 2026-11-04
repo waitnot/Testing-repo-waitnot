@@ -1,4 +1,5 @@
 import express from 'express';
+import { upsertCustomer } from './customers.js';
 import { getRestaurantFcmTokens } from '../routes/devices.js';
 import { sendPushNotification } from '../fcm.js';
 import { orderDB } from '../db.js';
@@ -124,6 +125,16 @@ router.post('/', checkOrderRateLimit, async (req, res) => {
       // Don't fail the order creation if socket fails
     }
     
+    // Auto-save customer for delivery/takeaway orders
+    if (['delivery','takeaway'].includes(req.body.orderType) &&
+        (req.body.customerName || req.body.customerPhone)) {
+      upsertCustomer(req.body.restaurantId, {
+        name:    req.body.customerName,
+        phone:   req.body.customerPhone,
+        address: req.body.deliveryAddress,
+      }).catch(() => {});
+    }
+
     res.status(201).json(order);
   } catch (error) {
     console.error('❌ Order creation failed:', error);

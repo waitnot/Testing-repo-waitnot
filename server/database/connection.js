@@ -282,6 +282,24 @@ export async function initDatabase() {
     `);
     await client.query('CREATE INDEX IF NOT EXISTS idx_printer_settings_restaurant_id ON printer_settings(restaurant_id)');
 
+    // ── Customer management ───────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS customers (
+        id SERIAL PRIMARY KEY,
+        restaurant_id UUID NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(30),
+        address TEXT,
+        last_order_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        order_count INTEGER DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_restaurant ON customers(restaurant_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(restaurant_id, phone) WHERE phone IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(restaurant_id, LOWER(name))`);
+
     // ── Phase 2: Staff username + PIN auth ───────────────────────────────────
     // Add username column to staff (nullable for backward compat)
     await client.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS username VARCHAR(50)`);

@@ -93,6 +93,9 @@ export default function StaffDashboard() {
   const searchDebounceRef   = useRef(null);
   const lastHistoryRowRef   = useRef(null);
   const [historySearchQuery, setHistorySearchQuery] = useState('');
+  // Customer autocomplete for delivery
+  const [customerSuggestions, setCustomerSuggestions] = useState([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [historySearchMode, setHistorySearchMode] = useState(false);
   const [historySearchResults, setHistorySearchResults] = useState([]); // cache flag — only fetch once per session
   const historyScrollRef   = useRef(null);   // ref for the scrollable history container
@@ -604,6 +607,28 @@ export default function StaffDashboard() {
   };
 
   // Search function — fetches into separate state, does NOT touch historyOrders or historyLoaded
+  // Customer autocomplete helpers
+  const fetchCustomerSuggestions = async (q) => {
+    if (!q || q.trim().length < 1) { setCustomerSuggestions([]); setShowCustomerSuggestions(false); return; }
+    if (!staff?.restaurant_id) return;
+    try {
+      const { data } = await axios.get(`${API}/api/customers/${staff.restaurant_id}/suggest?q=${encodeURIComponent(q.trim())}`);
+      setCustomerSuggestions(data);
+      setShowCustomerSuggestions(data.length > 0);
+    } catch (_) {}
+  };
+
+  const applyCustomerSuggestion = (c) => {
+    setOrderContext(prev => ({
+      ...prev,
+      customerName:    c.name    || prev.customerName,
+      customerPhone:   c.phone   || prev.customerPhone,
+      deliveryAddress: c.address || prev.deliveryAddress,
+    }));
+    setShowCustomerSuggestions(false);
+    setCustomerSuggestions([]);
+  };
+
   const runStaffHistorySearch = async (query) => {
     const q = (query || '').trim();
     setHistorySearchQuery(q);
@@ -1471,13 +1496,27 @@ export default function StaffDashboard() {
                     {orderContext.orderType === 'room' && <span className="text-xs font-bold text-white bg-orange-500 px-3 py-1 rounded-lg">{selectedTable?.label}</span>}
                     {orderContext.orderType === 'takeaway' && <span className="text-xs font-bold text-white bg-orange-500 px-3 py-1 rounded-lg">Takeaway</span>}
                     {orderContext.orderType === 'delivery' && <span className="text-xs font-bold text-white bg-blue-500 px-3 py-1 rounded-lg">Delivery</span>}
-                    <input type="text" value={orderContext.customerName}
-                      onChange={e => setOrderContext(prev => ({ ...prev, customerName: e.target.value }))}
-                      placeholder={orderContext.orderType === 'takeaway' ? 'Name' : 'Customer name'}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none min-w-[100px]" />
+                    <div className="relative min-w-[120px]">
+                      <input type="text" value={orderContext.customerName}
+                        onChange={e => { setOrderContext(prev => ({ ...prev, customerName: e.target.value })); fetchCustomerSuggestions(e.target.value); }}
+                        onBlur={() => setTimeout(() => setShowCustomerSuggestions(false), 200)}
+                        placeholder={orderContext.orderType === 'takeaway' ? 'Name' : 'Customer name'}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none w-full" />
+                      {showCustomerSuggestions && customerSuggestions.length > 0 && (
+                        <div className="absolute z-50 top-full left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg mt-0.5 min-w-[200px]">
+                          {customerSuggestions.map(c => (
+                            <button key={c.id} onMouseDown={() => applyCustomerSuggestion(c)}
+                              className="w-full text-left px-3 py-2 hover:bg-red-50 border-b border-gray-50 last:border-0">
+                              <p className="text-xs font-semibold text-gray-800">{c.name}</p>
+                              <p className="text-[10px] text-gray-400">{[c.phone, c.address].filter(Boolean).join(' · ')}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     {orderContext.orderType === 'takeaway' && (
                       <input type="tel" value={orderContext.customerPhone}
-                        onChange={e => setOrderContext(prev => ({ ...prev, customerPhone: e.target.value }))}
+                        onChange={e => { setOrderContext(prev => ({ ...prev, customerPhone: e.target.value })); fetchCustomerSuggestions(e.target.value); }}
                         placeholder="Phone"
                         className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none w-28" />
                     )}

@@ -564,6 +564,17 @@ export default function RestaurantDashboard() {
   const [activeBottomTab, setActiveBottomTab] = useState('orders');
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const [historySearch, setHistorySearch] = useState('');
+  // Customer autocomplete
+  const [customerSuggestions, setCustomerSuggestions] = useState([]);
+  // Customer management tab
+  const [customers, setCustomers] = useState([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerFoodSearch, setCustomerFoodSearch] = useState('');
+  const [customerSearchMode, setCustomerSearchMode] = useState('name'); // 'name' | 'food'
+  const [customersLoaded, setCustomersLoaded] = useState(false);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const customerSuggestRef = useRef(null);
   const [historySearchQuery, setHistorySearchQuery] = useState(''); // debounced, sent to server
   const [historySearchMode, setHistorySearchMode] = useState(false); // true when showing search results
   const [historySearchResults, setHistorySearchResults] = useState([]); // search results (separate from main orders)
@@ -938,6 +949,47 @@ export default function RestaurantDashboard() {
       const { data } = await axios.get(`/api/restaurants/${restaurantId}/menu/images`);
       setMenuImages(data); // { uuid: 'data:image/...' }
     } catch (_) {}
+  };
+
+  // Fetch customer autocomplete suggestions
+  const fetchCustomerSuggestions = async (q) => {
+    if (!q || q.trim().length < 1) { setCustomerSuggestions([]); return; }
+    const rid = localStorage.getItem('restaurantId');
+    if (!rid) return;
+    try {
+      const { data } = await axios.get(`/api/customers/${rid}/suggest?q=${encodeURIComponent(q)}`);
+      setCustomerSuggestions(data);
+      setShowCustomerSuggestions(data.length > 0);
+    } catch (_) {}
+  };
+
+  const applyCustomerSuggestion = (c) => {
+    setReceptionistOrder(prev => ({
+      ...prev,
+      customerName: c.name || prev.customerName,
+      customerPhone: c.phone || prev.customerPhone,
+      deliveryAddress: c.address || prev.deliveryAddress,
+    }));
+    setShowCustomerSuggestions(false);
+    setCustomerSuggestions([]);
+  };
+
+  const fetchCustomers = async (search = '', mode = 'name') => {
+    const rid = localStorage.getItem('restaurantId');
+    if (!rid) return;
+    setCustomersLoading(true);
+    try {
+      if (mode === 'food' && search.trim()) {
+        const { data } = await axios.get(`/api/customers/${rid}/search-by-food?item=${encodeURIComponent(search)}`);
+        setCustomers(data);
+      } else {
+        const q = search.trim() ? `&search=${encodeURIComponent(search)}` : '';
+        const { data } = await axios.get(`/api/customers/${rid}?limit=50${q}`);
+        setCustomers(data.customers || data);
+      }
+      setCustomersLoaded(true);
+    } catch (e) { console.error('fetchCustomers error:', e); }
+    finally { setCustomersLoading(false); }
   };
 
   const fetchRestaurant = async (id) => {
@@ -2441,6 +2493,12 @@ export default function RestaurantDashboard() {
           >
             <span className="hidden sm:inline">Discounts</span>
             <span className="sm:hidden">Discounts</span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('customers'); if (!customersLoaded) fetchCustomers(); }}
+            className={`no-select relative flex items-center gap-1.5 px-4 sm:px-5 py-3 font-semibold whitespace-nowrap text-xs sm:text-sm shrink-0 border-b-2 -mb-px transition-all ${activeTab === 'customers' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+          >
+            <span>Customers</span>
           </button>
           </div>
         </div>
@@ -4045,6 +4103,106 @@ export default function RestaurantDashboard() {
           </div>
         )}
 
+        {/* Customers Tab */}
+        {activeTab === 'customers' && (
+          <div className="w-full px-3 sm:px-6 py-4 overflow-y-auto">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">Customers</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {customersLoading ? 'Loading...' : `${customers.length} customers`}
+                </p>
+              </div>
+              {/* Search mode toggle */}
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+                  <button onClick={() => { setCustomerSearchMode('name'); setCustomerFoodSearch(''); fetchCustomers(customerSearch, 'name'); }}
+                    className={`px-3 py-1.5 font-medium transition-colors ${customerSearchMode==='name' ? 'bg-red-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                    By Name/Phone
+                  </button>
+                  <button onClick={() => { setCustomerSearchMode('food'); setCustomerSearch(''); }}
+                    className={`px-3 py-1.5 font-medium transition-colors ${customerSearchMode==='food' ? 'bg-red-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                    By Food
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Search bar */}
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-4">
+              <Search size={14} className="text-gray-400 shrink-0" />
+              {customerSearchMode === 'name' ? (
+                <input value={customerSearch}
+                  onChange={e => setCustomerSearch(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') fetchCustomers(customerSearch, 'name'); }}
+                  placeholder="Search by name or phone (Enter)"
+                  className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
+              ) : (
+                <input value={customerFoodSearch}
+                  onChange={e => setCustomerFoodSearch(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') fetchCustomers(customerFoodSearch, 'food'); }}
+                  placeholder="Search by food item (e.g. Biryani) (Enter)"
+                  className="flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
+              )}
+              {(customerSearch || customerFoodSearch) && (
+                <button onClick={() => { setCustomerSearch(''); setCustomerFoodSearch(''); fetchCustomers('', customerSearchMode); }}
+                  className="text-gray-400 hover:text-gray-600"><X size={14} /></button>
+              )}
+            </div>
+
+            {/* Loading */}
+            {customersLoading && (
+              <div className="flex justify-center py-12">
+                <div className="w-6 h-6 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+
+            {/* Empty */}
+            {!customersLoading && customers.length === 0 && (
+              <div className="text-center py-12 text-gray-400">
+                <svg className="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                <p className="text-sm">No customers found</p>
+                <p className="text-xs mt-1">Customers are added automatically when delivery/takeaway orders are placed</p>
+              </div>
+            )}
+
+            {/* Customer list */}
+            {!customersLoading && customers.length > 0 && (
+              <div className="space-y-2">
+                {customers.map(c => (
+                  <div key={c.id} className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      {/* Avatar */}
+                      <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                        <span className="text-red-600 font-bold text-sm">{(c.name||'?')[0].toUpperCase()}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-gray-800 text-sm leading-tight truncate">{c.name}</p>
+                        {c.phone && <p className="text-xs text-gray-500 mt-0.5">📞 {c.phone}</p>}
+                        {c.address && <p className="text-xs text-gray-400 mt-0.5 truncate">📍 {c.address}</p>}
+                        {/* Top items */}
+                        {c.top_items && c.top_items.length > 0 && c.top_items[0].name && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {c.top_items.filter(i=>i.name).slice(0,3).map((i,idx) => (
+                              <span key={idx} className="text-[10px] bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">{i.name}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-bold text-gray-800">₹{parseFloat(c.total_spent||0).toLocaleString()}</p>
+                      <p className="text-xs text-gray-400">{c.order_count} order{c.order_count!==1?'s':''}</p>
+                      <p className="text-xs text-gray-300 mt-0.5">{c.last_order_at ? new Date(c.last_order_at).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}) : ''}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Staff Order Tab */}
         {activeTab === 'Staff' && isFeatureEnabled('staffOrders') && (
           <div style={{display:'flex', flexDirection:'column', flex:1, overflow:'hidden'}}>
@@ -4294,7 +4452,31 @@ export default function RestaurantDashboard() {
                             <label className="text-xs text-gray-500 shrink-0">Delivery Rs.</label>
                             <input type="number" min="0" value={receptionistOrder.deliveryCharge || ''} onChange={e => setReceptionistOrder(prev => ({...prev, deliveryCharge: parseFloat(e.target.value) || 0}))} placeholder="0" className="text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none w-24" />
                           </div>
-                          <input type="text" value={receptionistOrder.customerName} onChange={e => setReceptionistOrder(prev => ({...prev, customerName: e.target.value}))} placeholder="Customer name *" className={"w-full text-xs border rounded px-2 py-1.5 focus:outline-none " + (!receptionistOrder.customerName ? 'border-red-300 bg-red-50' : 'border-gray-200')} />
+                          {/* Name with autocomplete */}
+                          <div className="relative">
+                            <input type="text" value={receptionistOrder.customerName}
+                              onChange={e => { setReceptionistOrder(prev => ({...prev, customerName: e.target.value})); fetchCustomerSuggestions(e.target.value); }}
+                              onBlur={() => setTimeout(() => setShowCustomerSuggestions(false), 200)}
+                              placeholder="Customer name *"
+                              className={"w-full text-xs border rounded px-2 py-1.5 focus:outline-none " + (!receptionistOrder.customerName ? 'border-red-300 bg-red-50' : 'border-gray-200')} />
+                            {showCustomerSuggestions && customerSuggestions.length > 0 && (
+                              <div className="absolute z-50 top-full left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg mt-0.5 max-h-48 overflow-y-auto">
+                                {customerSuggestions.map(c => (
+                                  <button key={c.id} onMouseDown={() => applyCustomerSuggestion(c)}
+                                    className="w-full text-left px-3 py-2 hover:bg-red-50 border-b border-gray-50 last:border-0">
+                                    <p className="text-xs font-semibold text-gray-800">{c.name}</p>
+                                    <p className="text-[10px] text-gray-400">{[c.phone, c.address].filter(Boolean).join(' · ')}</p>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {/* Phone */}
+                          <input type="tel" value={receptionistOrder.customerPhone || ''}
+                            onChange={e => { setReceptionistOrder(prev => ({...prev, customerPhone: e.target.value})); fetchCustomerSuggestions(e.target.value); }}
+                            placeholder="Phone number"
+                            className="w-full text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none" />
+                          {/* Address */}
                           <input type="text" value={receptionistOrder.deliveryAddress} onChange={e => setReceptionistOrder(prev => ({...prev, deliveryAddress: e.target.value}))} placeholder="Delivery address *" className={"w-full text-xs border rounded px-2 py-1.5 focus:outline-none " + (!receptionistOrder.deliveryAddress ? 'border-red-300 bg-red-50' : 'border-gray-200')} />
                         </div>
                       )}
